@@ -3487,7 +3487,21 @@
             // is deliberately minimal. Prefer tagging meshes NOCOLLIDE in Blender over
             // growing this regex — explicit beats pattern-matching that can catch the wrong
             // thing, which is exactly the trap `circle` was.
-            const DECORATIVE = /^(sphere|text)/i;
+            // MOBILE: measured, not guessed. Feeding 227k triangles in produced an octree of
+            // 3.77M nodes at depth 17, holding 17.2M triangle references — each source
+            // triangle duplicated ~35 times across nodes. That is the ~1.8GB heap, it is
+            // built right here during "BUILDING WORLD", and it is where the phone died.
+            //
+            // The Text* meshes were already excluded and they are the biggest things in the
+            // scene (Text025 alone is 77k triangles). What was still going in:
+            //   curtain_R 70,400   Dirty_Toilet 46,816   chair002 38,760
+            //   classic_laptop 12,157   WORLD_SPHERE 3,744
+            // None of it is structure. You cannot meaningfully collide with a curtain, and
+            // WORLD_SPHERE is the sky — having it collidable was always wrong.
+            //
+            // Cost of excluding these: you can walk through the chair, the toilet and the
+            // laptop table. On a phone that is a fair trade for the page staying alive.
+            const DECORATIVE = /^(sphere|text|curtain|dirty_toilet|chair|classic_laptop|world_sphere)/i;
             const skipped = [];
             model.traverse((child) => {
                 if (child.isMesh && (DECORATIVE.test(child.name) || isNoCollide(child.name))) skipped.push(child);
