@@ -55,6 +55,20 @@
             transition: opacity 0.3s ease;
         }
 
+        #rotate-gate { display: none; }
+        @media (orientation: portrait) and (pointer: coarse) {
+            #rotate-gate {
+                display: flex; position: fixed; inset: 0; z-index: 9999;
+                flex-direction: column; align-items: center; justify-content: center;
+                background: #000; color: #fff; text-align: center;
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            }
+            .rg-icon { font-size: 64px; margin-bottom: 18px; animation: rg-spin 2.4s ease-in-out infinite; }
+            .rg-text { font-size: 17px; font-weight: 600; letter-spacing: 3px; }
+            .rg-sub  { font-size: 13px; letter-spacing: 1px; opacity: 0.55; margin-top: 10px; }
+            @keyframes rg-spin { 0%,70%,100% { transform: rotate(0deg); } 85% { transform: rotate(90deg); } }
+        }
+
         #screen-prompt {
             position: absolute;
             top: 56px;
@@ -178,6 +192,18 @@
             border-radius: 14px;
         }
 
+        .browse-btn {
+            width: 56px; height: 56px;
+            bottom: 158px;
+            font-size: 24px;
+            border-radius: 14px;
+            background: rgba(0,255,255,0.16);
+            border-color: rgba(0,255,255,0.45);
+            display: none;                 /* shown per-frame only when browsable */
+        }
+        #mobile-prev { right: 186px; }
+        #mobile-next { right: 110px; }
+
         #mobile-look-zone {
             position: absolute;
             top: 0;
@@ -220,6 +246,11 @@
         <div id="mobile-right" class="mobile-btn">▶</div>
         <div id="mobile-jump" class="mobile-btn">JUMP</div>
         <div id="mobile-interact" class="mobile-btn">TAP</div>
+        <!-- Browsing the shorts carousel and the photo gallery was mouse-wheel only, which a
+             phone has no equivalent of. These appear only when there is something to page
+             through, and drive the same index the wheel does. -->
+        <div id="mobile-prev" class="mobile-btn browse-btn">◀</div>
+        <div id="mobile-next" class="mobile-btn browse-btn">▶</div>
         <div id="mobile-look-zone">
             <div id="mobile-look-indicator"></div>
             <div id="mobile-look-knob"></div>
@@ -235,6 +266,16 @@
          faded out once read — see setPrompt(). Kept out of #hud deliberately: that box is
          the coordinate readout and is styled as a panel, which is not what a prompt wants. -->
     <div id="screen-prompt"></div>
+
+    <!-- Portrait gate. iOS gives web pages no way to actually lock orientation — the
+         Screen Orientation API is unavailable in Safari outside fullscreen — so the only
+         reliable approach is to refuse to run until the phone is turned. Pure CSS, keyed
+         on a coarse pointer so it never appears on a desktop browser resized tall. -->
+    <div id="rotate-gate">
+        <div class="rg-icon">⟳</div>
+        <div class="rg-text">ROTATE YOUR DEVICE</div>
+        <div class="rg-sub">this experience is landscape only</div>
+    </div>
 
     <div id="instructions">
         <canvas id="blob-bg" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:0;"></canvas>
@@ -1489,11 +1530,20 @@
         // sphere. Down the shaft that's the difference between "somewhere within 5 metres"
         // and "no further than 5 in x, 5 in y and 5 in z", which is the stricter of the two
         // and is what reads naturally off the coordinate HUD. Overrides startWithin when set.
+        // WebKit does not decode VP9 alpha in WebM, so on iOS the shaft clip rendered as an
+        // opaque black square. The alpha equivalent Apple does support is HEVC in MP4, which
+        // is what webmtest-alpha.mp4 is. Chrome/Firefox keep the smaller .webm.
+        const APPLE_BROWSER = /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent)
+                           || /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const ALPHA_MP4 = { './VIDS/webmtest.webm': './VIDS/webmtest-alpha.mp4' };
+        const alphaSrcFor = (src) => (APPLE_BROWSER && ALPHA_MP4[src]) ? ALPHA_MP4[src] : src;
+
         function setupBillboardVideo(src, x, y, z, size = 2.5, playWithin = 10, fullVolumeAt = 2.5,
                                      loop = true, playOnce = false, startWithin = null,
                                      startBox = null) {
             const video = document.createElement('video');
-            video.src = src;
+            video.src = alphaSrcFor(src);
+            video.playsInline = true;      // iOS otherwise hijacks it into the fullscreen player
             video.loop = loop;
             video.playsInline = true;
             // MOBILE: 'none', not 'auto'. With 'auto' the browser pulls every clip in full
@@ -2793,7 +2843,10 @@
         let promptText = null, promptShownAt = 0;
 
         function setPrompt(text) {
-            const clean = (text || '').replace(/^> ?/gm, '').trim();   // the "> " was HUD styling
+            let clean = (text || '').replace(/^> ?/gm, '').trim();   // the "> " was HUD styling
+            // There is no clicking on a phone. Rewritten at the point of display so every
+            // call site keeps one wording.
+            if (isMobile) clean = clean.replace(/\bCLICK\b/g, 'TAP');
             if (clean === promptText) return;
             promptText = clean;
             if (!interactionPrompt) return;
@@ -2907,6 +2960,45 @@
         // Chrome as a back/forward gesture even with overscroll-behavior set. Cancelling
         // every wheel event is safe here — the page is a fixed full-screen canvas with
         // `overflow: hidden`, so there is nothing that legitimately scrolls.
+        // Stepping the carousels, factored out so the wheel and the on-screen buttons cannot
+        // drift apart. dir is +1 (next) or -1 (previous).
+        function stepCarousel(dir) {
+            const now = performance.now();
+            if (galleryCards.length && playerInGallery()) {
+                if (now - galleryWheelCooldown <= 160) return true;
+                galleryIndex = Math.max(0, Math.min(galleryCards.length - 1, galleryIndex + dir));
+                galleryWheelCooldown = now;
+                return true;
+            }
+            if (isHoveringMenu && menuGroup.visible) {
+                if (now - wheelCooldown <= 200) return true;
+                currentFilmIndex = Math.max(0, Math.min(filmLibrary.length - 1, currentFilmIndex + dir));
+                wheelCooldown = now;
+                return true;
+            }
+            return false;
+        }
+
+        // Is there anything to page through where the player is standing or looking?
+        const canBrowse = () => (galleryCards.length && playerInGallery())
+                             || (isHoveringMenu && menuGroup.visible);
+
+        if (isMobile) {
+            for (const [id, dir] of [['mobile-prev', -1], ['mobile-next', 1]]) {
+                const el = document.getElementById(id);
+                if (!el) continue;
+                el.addEventListener('touchstart', (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    stepCarousel(dir);
+                    el.classList.add('pressed');
+                }, { passive: false });
+                el.addEventListener('touchend', (e) => {
+                    e.preventDefault(); el.classList.remove('pressed');
+                }, { passive: false });
+                el.addEventListener('touchcancel', () => el.classList.remove('pressed'));
+            }
+        }
+
         document.addEventListener('wheel', (e) => {
             if (e.cancelable) e.preventDefault();
 
@@ -3007,14 +3099,18 @@
                         lookKnob.style.left = (lookOriginX + clampedDx - 18) + 'px';
                         lookKnob.style.top = (lookOriginY + clampedDy - 18) + 'px';
 
-                        // Apply look — continuous drag like a trackpad
-                        mobileYaw -= dx * 0.003;
-                        mobilePitch += dy * 0.003;
-                        mobilePitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, mobilePitch));
+                        // Hold-to-keep-turning. The origin is NOT reset, so the distance the
+                        // finger sits from where it landed becomes a steering offset that
+                        // updateMobileCamera turns into continuous rotation. Trackpad-style
+                        // (reset every move) meant a full swipe per small turn, which is what
+                        // made looking around so laborious.
+                        lookOffsetX = clampedDx;
+                        lookOffsetY = clampedDy;
 
-                        // Reset origin so drag is continuous (trackpad style)
-                        lookOriginX = touch.clientX;
-                        lookOriginY = touch.clientY;
+                        // A little 1:1 movement on top, so short drags still feel direct.
+                        mobileYaw -= dx * 0.0016;
+                        mobilePitch -= dy * 0.0016;      // -= : dragging down looks down
+                        mobilePitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, mobilePitch));
                     }
                 }
             }, { passive: false });
@@ -3022,7 +3118,7 @@
             lookZone.addEventListener('touchend', (e) => {
                 for (const touch of e.changedTouches) {
                     if (touch.identifier === lookTouchId) {
-                        lookTouchId = null;
+                        lookTouchId = null; lookOffsetX = 0; lookOffsetY = 0;
                         lookIndicator.style.display = 'none';
                         lookKnob.style.display = 'none';
                     }
@@ -3030,7 +3126,7 @@
             }, { passive: true });
 
             lookZone.addEventListener('touchcancel', () => {
-                lookTouchId = null;
+                lookTouchId = null; lookOffsetX = 0; lookOffsetY = 0;
                 lookIndicator.style.display = 'none';
                 lookKnob.style.display = 'none';
             });
@@ -3070,8 +3166,25 @@
         }
 
         // Update camera from touch joystick each frame
+        let lookOffsetX = 0, lookOffsetY = 0, lookLastT = 0;
+        const LOOK_DEADZONE = 6;      // px of slop before a held finger starts steering
+        const LOOK_TURN_RATE = 2.4;   // radians/sec at full deflection
+
         function updateMobileCamera() {
             if (!isMobile || !mobileActive) return;
+
+            // Continuous steering while the finger is held away from where it landed.
+            const now = performance.now();
+            const dt = lookLastT ? Math.min(0.05, (now - lookLastT) / 1000) : 0;
+            lookLastT = now;
+            const steer = (v) => {
+                const m = Math.abs(v) - LOOK_DEADZONE;
+                return m <= 0 ? 0 : Math.sign(v) * Math.min(1, m / 24);
+            };
+            mobileYaw   -= steer(lookOffsetX) * LOOK_TURN_RATE * dt;
+            mobilePitch -= steer(lookOffsetY) * LOOK_TURN_RATE * dt;
+            mobilePitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, mobilePitch));
+
             camera.up.set(0, 1, 0);
             const euler = new THREE.Euler(mobilePitch, mobileYaw, 0, 'YXZ');
             camera.quaternion.setFromEuler(euler);
@@ -3844,17 +3957,49 @@
                                 if (stepCheck) {
                                     playerCapsule.translate(stepCheck.normal.clone().multiplyScalar(stepCheck.depth));
                                 }
-                                // Settle back down
-                                playerCapsule.translate(new THREE.Vector3(0, -STEP, 0));
-                                const groundCheck = worldOctree.capsuleIntersect(playerCapsule);
-                                if (groundCheck && groundCheck.normal.y > 0.5) {
-                                    // Stepped up successfully
-                                    playerCapsule.translate(groundCheck.normal.clone().multiplyScalar(groundCheck.depth));
-                                    playerOnGround = true;
-                                    groundNormal.copy(groundCheck.normal);
-                                    playerVelocity.y = 0;
-                                } else {
-                                    // Step failed, revert
+                                // Advance while raised, before feeling for ground. The
+                                // collision above has already pushed the capsule back OFF the
+                                // ledge, so probing straight down from here just finds the
+                                // floor we were already on and the step reads as a failure —
+                                // which is why anything above about 5cm stopped the player
+                                // dead and needed a jump. Nudging forward by a radius puts
+                                // the capsule over the ledge before the probe.
+                                const stepFwd = new THREE.Vector3(playerVelocity.x, 0, playerVelocity.z);
+                                if (stepFwd.lengthSq() > 1e-6) {
+                                    stepFwd.normalize().multiplyScalar(PLAYER_RADIUS * 1.6);
+                                    playerCapsule.translate(stepFwd);
+                                }
+                                // Feel for ground on the way back down instead of dropping the
+                                // whole STEP and demanding a hit at the bottom. That is why
+                                // small ledges needed a jump: a 5cm lip put the capsule back
+                                // exactly where it started, the probe found no NEW ground, the
+                                // step was judged a failure and got reverted — so you walked
+                                // into the lip again next frame. Probing in eighths catches the
+                                // lip at whatever height it actually is.
+                                let settled = false;
+                                const PROBE = STEP / 8;
+                                for (let i = 0; i < 8 && !settled; i++) {
+                                    playerCapsule.translate(new THREE.Vector3(0, -PROBE, 0));
+                                    const g = worldOctree.capsuleIntersect(playerCapsule);
+                                    if (g && g.normal.y > 0.5) {
+                                        playerCapsule.translate(g.normal.clone().multiplyScalar(g.depth));
+                                        // Only accept a rise a step tall. Without this the
+                                        // push-out lands the player on top of anything the
+                                        // nudge reached into — a 0.45m block against a 0.50m
+                                        // player, which is vaulting, not stepping.
+                                        if (playerCapsule.start.y - preStepStart.y <= STEP + 0.01) {
+                                            playerOnGround = true;
+                                            groundNormal.copy(g.normal);
+                                            playerVelocity.y = 0;
+                                            settled = true;
+                                        }
+                                    }
+                                }
+                                if (!settled) {
+                                    // No ledge within a step. Put the capsule back exactly
+                                    // where it was — the forward nudge above may have left it
+                                    // inside whatever we walked into, and keeping that would
+                                    // let the player sink through solid geometry.
                                     playerCapsule.start.copy(preStepStart);
                                     playerCapsule.end.copy(preStepEnd);
                                 }
@@ -3909,6 +4054,14 @@
             updateEmbedExclusivity();
             updatePromptFade();
 
+            if (isMobile && mobileActive) {
+                const show = canBrowse() ? 'flex' : 'none';
+                for (const id of ['mobile-prev', 'mobile-next']) {
+                    const el = document.getElementById(id);
+                    if (el && el.style.display !== show) el.style.display = show;
+                }
+            }
+
             if (isPlayerActive()) {
                 raycaster.setFromCamera(centerPoint, camera);
                 const intersects = raycaster.intersectObjects(scene.children, true);
@@ -3948,7 +4101,8 @@
                         else prompt = `CLICK TO PLAY${label}`;
                     } else if (type === 'menu_hitbox' || type === 'select_film') {
                         isHoveringMenu = true;
-                        prompt = "SCROLL UP AND DOWN TO NAVIGATE\nCLICK TO WATCH";
+                        prompt = isMobile ? "USE ◀ ▶ TO BROWSE\nTAP TO WATCH"
+                                          : "SCROLL UP AND DOWN TO NAVIGATE\nCLICK TO WATCH";
                     }
                 }
 
@@ -3956,7 +4110,8 @@
                 // the carousel gives no other clue that it scrolls. Only when there is no
                 // other prompt, so looking at something never gets overridden.
                 if (!prompt && playerInGallery()) {
-                    prompt = "SCROLL UP AND DOWN TO FLIP THROUGH";
+                    prompt = isMobile ? "USE ◀ ▶ TO FLIP THROUGH"
+                                      : "SCROLL UP AND DOWN TO FLIP THROUGH";
                 }
                 setPrompt(prompt);
 
