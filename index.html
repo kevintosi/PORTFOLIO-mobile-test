@@ -872,12 +872,30 @@
         const SCREEN_ORDER = -1;
         const HOLE_PUNCH_ORDER = -1000;
 
+        // Poster images for the wall screens, held back until the model has loaded so they
+        // do not compete with it for bandwidth and memory on a phone.
+        const PENDING_THUMBS = [];
+        function loadPendingThumbnails() {
+            const q = PENDING_THUMBS.splice(0);
+            for (const { url, tex } of q) {
+                textureLoader.load(url, (loaded) => {
+                    tex.image = loaded.image;
+                    tex.needsUpdate = true;
+                }, undefined, () => {});
+            }
+            if (q.length) console.info(`[thumbs] loaded ${q.length} screen posters after the model`);
+        }
+
         function setupYouTubeScreen(videoId, x, y, z, rotY = 0, width = 0.75, height = 0.42) {
             // Thick box — front face shows thumbnail, switches to hole-punch when playing
             const blackMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 1 });
+            // Deferred: the screens are built before the model arrives, so loading their
+            // posters here put ~59 image requests in front of the .glb. Queued instead and
+            // flushed once the world is in — nothing can see them before that anyway.
             const thumbUrl = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
-            const thumbTex = textureLoader.load(thumbUrl);
+            const thumbTex = new THREE.Texture();
             thumbTex.colorSpace = THREE.SRGBColorSpace;
+            PENDING_THUMBS.push({ url: thumbUrl, tex: thumbTex });
             const frontMat = new THREE.MeshBasicMaterial({ map: thumbTex, toneMapped: false });
             const depth = 0.05;
             const screenGeo = new THREE.BoxGeometry(width, height, depth);
@@ -1478,7 +1496,11 @@
             video.src = src;
             video.loop = loop;
             video.playsInline = true;
-            video.preload = 'auto';
+            // MOBILE: 'none', not 'auto'. With 'auto' the browser pulls every clip in full
+            // the moment the page starts — 12MB of video, including a 2400x2400 VP9 alpha
+            // clip that is costly to decode — all while the model is still downloading.
+            // They fetch when something calls play(), which is when they are needed.
+            video.preload = 'none';
             video.muted = false;
             video.volume = 0;          // ramped by distance in the animation loop
 
@@ -1560,7 +1582,11 @@
             video.src = src;
             video.loop = loop;
             video.playsInline = true;
-            video.preload = 'auto';
+            // MOBILE: 'none', not 'auto'. With 'auto' the browser pulls every clip in full
+            // the moment the page starts — 12MB of video, including a 2400x2400 VP9 alpha
+            // clip that is costly to decode — all while the model is still downloading.
+            // They fetch when something calls play(), which is when they are needed.
+            video.preload = 'none';
             video.muted = false;
             // Starts at full when fullVolumeAt >= playWithin (no fade), otherwise ramped.
             video.volume = fullVolumeAt >= playWithin ? 1 : 0;
@@ -3602,6 +3628,7 @@
 
             isModelLoaded = true;
             setWorldReady();
+            loadPendingThumbnails();
         }, reportLoadProgress, (error) => {
             console.error(error);
             if (loadStatus) loadStatus.textContent = 'COULD NOT LOAD THE WORLD — TRY RELOADING';
