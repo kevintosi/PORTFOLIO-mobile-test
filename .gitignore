@@ -1,0 +1,5 @@
+# The unoptimised 81MB export, kept locally only so the two builds can be
+# compared side by side. The whole point of this repo is the small build.
+PORTFOLIO V2.glb
+
+.DS_Store
