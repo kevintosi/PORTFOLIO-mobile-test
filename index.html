@@ -201,7 +201,9 @@
 
         #mobile-unmute {
             width: 86px; height: 44px;
-            bottom: 20px; right: 20px;
+            /* Top right, clear of where the hand actually sits. Down by the other controls it
+               spent its life under a thumb. */
+            top: 20px; right: 20px;
             font-size: 13px; font-weight: bold;
             border-radius: 12px;
             background: rgba(0,255,255,0.16);
@@ -1075,7 +1077,12 @@
             const worldW = (bb.max.x - bb.min.x) * scale.x;
             const worldH = (bb.max.y - bb.min.y) * scale.y;
 
-            const CSS_W = 640;
+            // 640 gave a CSS3D scale of 0.00027 here - the element is 0.17 world units
+            // wide. iOS drops the video layer of an iframe transformed that far down while
+            // still playing its audio, which is exactly what the laptop did: sound, no
+            // picture. The theater's embed works because its scale is nowhere near as
+            // extreme. Fewer CSS pixels for the same world size means a gentler transform.
+            const CSS_W = 192;
             const container = document.createElement('div');
             container.style.width = CSS_W + 'px';
             container.style.height = Math.round(CSS_W * (worldH / worldW)) + 'px';
@@ -2600,7 +2607,12 @@
 
             if (film.source === 'youtube') {
                 const origin = encodeURIComponent(window.location.origin);
-                const embedSrc = `${film.embedUrl}?enablejsapi=1&origin=${origin}&autoplay=1&rel=0&playsinline=1&cc_load_policy=0`;
+                // mute=1 on mobile, for the same reason the work screens need it: iOS will
+                // not autoplay with sound, so the film loaded and stopped on its first frame -
+                // and a stopped film is a PAUSED film, which raised the MENU overlay over it.
+                // That is the "it loads then pauses and brings up the menu".
+                const tMute = isMobile ? '&mute=1' : '';
+                const embedSrc = `${film.embedUrl}?enablejsapi=1&origin=${origin}&autoplay=1&rel=0&playsinline=1&cc_load_policy=0${tMute}`;
                 cssObject.element.innerHTML = `
                     <div style="width:100%;height:100%;position:relative;">
                         <iframe src="${embedSrc}" frameborder="0"
@@ -2614,7 +2626,8 @@
                 initYouTubePlayer();
             } else {
                 const separator = film.embedUrl.includes('?') ? '&' : '?';
-                const embedSrc = film.embedUrl + separator + 'autopause=0&badge=0&autoplay=1&player_id=0&playsinline=1';
+                const embedSrc = film.embedUrl + separator + 'autopause=0&badge=0&autoplay=1&player_id=0&playsinline=1'
+                                 + (isMobile ? '&muted=1' : '');
                 cssObject.element.innerHTML = `
                     <div style="width:100%;height:100%;position:relative;">
                         <iframe src="${embedSrc}" frameborder="0"
@@ -4110,7 +4123,10 @@
 
             for (let i = 0; i < 5; i++) {
                 if (isPlayerActive() && isModelLoaded) {
-                    const speed = (keyStates['ShiftLeft'] ? 8.0 : 5.0);
+                    // Half speed on touch. The drag surface has no analogue range - past the
+                    // deadzone it is simply full tilt - so the desktop speed that a keyboard
+                    // taps in and out of runs away from you on a phone.
+                    const speed = (keyStates['ShiftLeft'] ? 8.0 : 5.0) * (isMobile ? 0.5 : 1.0);
                     camera.getWorldDirection(playerDirection);
                     playerDirection.y = 0; playerDirection.normalize();
 
