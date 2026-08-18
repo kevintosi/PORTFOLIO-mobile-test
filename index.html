@@ -214,23 +214,6 @@
             touch-action: none;
             z-index: 1;
         }
-        #mobile-look-indicator {
-            position: absolute;
-            width: 80px; height: 80px;
-            border: 2px solid rgba(255,255,255,0.2);
-            border-radius: 50%;
-            pointer-events: none;
-            display: none;
-        }
-        #mobile-look-knob {
-            position: absolute;
-            width: 36px; height: 36px;
-            background: rgba(255,255,255,0.25);
-            border: 2px solid rgba(255,255,255,0.4);
-            border-radius: 50%;
-            pointer-events: none;
-            display: none;
-        }
     </style>
     <script src="https://player.vimeo.com/api/player.js"></script>
 </head>
@@ -252,8 +235,6 @@
         <div id="mobile-prev" class="mobile-btn browse-btn">◀</div>
         <div id="mobile-next" class="mobile-btn browse-btn">▶</div>
         <div id="mobile-look-zone">
-            <div id="mobile-look-indicator"></div>
-            <div id="mobile-look-knob"></div>
         </div>
     </div>
 
@@ -3052,9 +3033,16 @@
         let mobileYaw = 0;
         let mobilePitch = 0;
         let lookTouchId = null;
-        let lookOriginX = 0, lookOriginY = 0;
-        const lookIndicator = document.getElementById('mobile-look-indicator');
-        const lookKnob = document.getElementById('mobile-look-knob');
+        // Position of the look finger at the PREVIOUS touchmove, not where it landed. Using
+        // the landing point meant every move event re-applied the whole distance from the
+        // origin, so one 50px drag delivered several times 50px of rotation and got worse the
+        // longer the finger was held. That compounding, not the rate, is what made looking
+        // around feel violent and never the same twice.
+        let lookLastX = 0, lookLastY = 0;
+        // Radians per pixel, set per gesture from the viewport so a drag covers the same
+        // angle on any screen size. A full-width swipe turns 90 degrees.
+        let lookRadPerPx = 0.002;
+        const LOOK_SWIPE_TURN = Math.PI / 2;
 
         if (isMobile) {
             // Hide desktop HUD, show mobile controls
@@ -3078,15 +3066,9 @@
                 for (const touch of e.changedTouches) {
                     if (lookTouchId === null) {
                         lookTouchId = touch.identifier;
-                        lookOriginX = touch.clientX;
-                        lookOriginY = touch.clientY;
-                        // Show indicator at touch point
-                        lookIndicator.style.display = 'block';
-                        lookIndicator.style.left = (touch.clientX - 40) + 'px';
-                        lookIndicator.style.top = (touch.clientY - 40) + 'px';
-                        lookKnob.style.display = 'block';
-                        lookKnob.style.left = (touch.clientX - 18) + 'px';
-                        lookKnob.style.top = (touch.clientY - 18) + 'px';
+                        lookLastX = touch.clientX;
+                        lookLastY = touch.clientY;
+                        lookRadPerPx = LOOK_SWIPE_TURN / Math.max(1, window.innerWidth);
                     }
                 }
             }, { passive: false });
@@ -3095,33 +3077,17 @@
                 e.preventDefault();
                 for (const touch of e.changedTouches) {
                     if (touch.identifier === lookTouchId) {
-                        const dx = touch.clientX - lookOriginX;
-                        const dy = touch.clientY - lookOriginY;
+                        // Straight 1:1 drag, the way a map or Street View behaves: the world
+                        // turns exactly as far as the finger travelled and stops dead on
+                        // release. Deltas are measured against the last move, so holding still
+                        // rotates nothing.
+                        const dx = touch.clientX - lookLastX;
+                        const dy = touch.clientY - lookLastY;
+                        lookLastX = touch.clientX;
+                        lookLastY = touch.clientY;
 
-                        // Clamp knob visual to indicator radius
-                        const maxR = 30;
-                        const dist = Math.sqrt(dx * dx + dy * dy);
-                        const clampedDx = dist > maxR ? dx * maxR / dist : dx;
-                        const clampedDy = dist > maxR ? dy * maxR / dist : dy;
-                        lookKnob.style.left = (lookOriginX + clampedDx - 18) + 'px';
-                        lookKnob.style.top = (lookOriginY + clampedDy - 18) + 'px';
-
-                        // Hold-to-keep-turning. The origin is NOT reset, so the distance the
-                        // finger sits from where it landed becomes a steering offset that
-                        // updateMobileCamera turns into continuous rotation. Trackpad-style
-                        // (reset every move) meant a full swipe per small turn, which is what
-                        // made looking around so laborious.
-                        lookOffsetX = clampedDx;
-                        lookOffsetY = clampedDy;
-
-                        // A little 1:1 movement on top, so short drags still feel direct.
-                        // Rate-matched to LOOK_TURN_RATE: a brisk flick moves the finger about
-                        // 1000px/sec, so 0.0006 rad/px peaks at ~0.6 rad/sec - the same speed
-                        // the held-edge turn tops out at. At the old 0.0016 the flick ran ~2.5x
-                        // faster than the hold, which read as the look being twitchy no matter
-                        // how far LOOK_TURN_RATE came down.
-                        mobileYaw -= dx * 0.0006;
-                        mobilePitch -= dy * 0.0006;      // -= : dragging down looks down
+                        mobileYaw -= dx * lookRadPerPx;
+                        mobilePitch -= dy * lookRadPerPx;      // -= : dragging down looks down
                         mobilePitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, mobilePitch));
                     }
                 }
@@ -3130,17 +3096,13 @@
             lookZone.addEventListener('touchend', (e) => {
                 for (const touch of e.changedTouches) {
                     if (touch.identifier === lookTouchId) {
-                        lookTouchId = null; lookOffsetX = 0; lookOffsetY = 0;
-                        lookIndicator.style.display = 'none';
-                        lookKnob.style.display = 'none';
+                        lookTouchId = null;
                     }
                 }
             }, { passive: true });
 
             lookZone.addEventListener('touchcancel', () => {
-                lookTouchId = null; lookOffsetX = 0; lookOffsetY = 0;
-                lookIndicator.style.display = 'none';
-                lookKnob.style.display = 'none';
+                lookTouchId = null;
             });
 
             // Mobile movement buttons
@@ -3177,25 +3139,11 @@
             }, { passive: false });
         }
 
-        // Update camera from touch joystick each frame
-        let lookOffsetX = 0, lookOffsetY = 0, lookLastT = 0;
-        const LOOK_DEADZONE = 6;      // px of slop before a held finger starts steering
-        const LOOK_TURN_RATE = 0.6;   // radians/sec at full deflection (2.4 -> 1.2 -> 0.6; 2.4 was very twitchy)
-
+        // Apply the touch-look orientation each frame. Rotation is accumulated in the
+        // touchmove handler, so there is nothing continuous to integrate here: the world
+        // moves only while a finger is actually moving.
         function updateMobileCamera() {
             if (!isMobile || !mobileActive) return;
-
-            // Continuous steering while the finger is held away from where it landed.
-            const now = performance.now();
-            const dt = lookLastT ? Math.min(0.05, (now - lookLastT) / 1000) : 0;
-            lookLastT = now;
-            const steer = (v) => {
-                const m = Math.abs(v) - LOOK_DEADZONE;
-                return m <= 0 ? 0 : Math.sign(v) * Math.min(1, m / 24);
-            };
-            mobileYaw   -= steer(lookOffsetX) * LOOK_TURN_RATE * dt;
-            mobilePitch -= steer(lookOffsetY) * LOOK_TURN_RATE * dt;
-            mobilePitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, mobilePitch));
 
             camera.up.set(0, 1, 0);
             const euler = new THREE.Euler(mobilePitch, mobileYaw, 0, 'YXZ');
