@@ -163,27 +163,21 @@
             border-color: rgba(255,255,255,0.6);
         }
 
-        #mobile-fwd {
-            width: 70px; height: 70px;
-            bottom: 130px; left: 50px;
-        }
-        #mobile-back {
-            width: 70px; height: 70px;
-            bottom: 40px; left: 50px;
-        }
-        #mobile-left {
-            width: 60px; height: 60px;
-            bottom: 85px; left: 0px;
-        }
-        #mobile-right {
-            width: 60px; height: 60px;
-            bottom: 85px; left: 110px;
-        }
         #mobile-jump {
             width: 75px; height: 75px;
             bottom: 85px; right: 20px;
             font-size: 16px; font-weight: bold;
             border-radius: 18px;
+        }
+
+        #mobile-unmute {
+            width: 86px; height: 44px;
+            bottom: 20px; right: 20px;
+            font-size: 13px; font-weight: bold;
+            border-radius: 12px;
+            background: rgba(0,255,255,0.16);
+            border-color: rgba(0,255,255,0.45);
+            display: none;                 /* only while a work screen is playing */
         }
 
         .browse-btn {
@@ -198,14 +192,23 @@
         #mobile-prev { right: 186px; }
         #mobile-next { right: 110px; }
 
+        #mobile-move-zone {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 50%;
+            height: 100%;
+            pointer-events: auto;
+            touch-action: none;
+            z-index: 1;
+        }
         #mobile-look-zone {
             position: absolute;
             top: 0;
             right: 0;
-            /* Full width, not 55%. Tapping an object is done by touching the object itself
-               now, so the surface that receives touches has to cover everything. The control
-               buttons sit above this in z-order and still take their own taps. */
-            width: 100%;
+            /* Right half looks, left half walks. Both halves also register a tap on
+               whatever is under the finger, so nothing is lost by splitting them. */
+            width: 50%;
             height: 100%;
             pointer-events: auto;
             touch-action: none;
@@ -220,16 +223,14 @@
     <div id="crosshair">+</div>
 
     <div id="mobile-controls">
-        <div id="mobile-fwd" class="mobile-btn">▲</div>
-        <div id="mobile-back" class="mobile-btn">▼</div>
-        <div id="mobile-left" class="mobile-btn">◀</div>
-        <div id="mobile-right" class="mobile-btn">▶</div>
         <div id="mobile-jump" class="mobile-btn">JUMP</div>
+        <div id="mobile-unmute" class="mobile-btn">UNMUTE</div>
         <!-- Browsing the shorts carousel and the photo gallery was mouse-wheel only, which a
              phone has no equivalent of. These appear only when there is something to page
              through, and drive the same index the wheel does. -->
         <div id="mobile-prev" class="mobile-btn browse-btn">◀</div>
         <div id="mobile-next" class="mobile-btn browse-btn">▶</div>
+        <div id="mobile-move-zone"></div>
         <div id="mobile-look-zone">
         </div>
     </div>
@@ -3086,9 +3087,10 @@
         // around feel violent and never the same twice.
         let lookLastX = 0, lookLastY = 0;
         // Radians per pixel, set per gesture from the viewport so a drag covers the same
-        // angle on any screen size. A full-width swipe turns 108 degrees.
+        // angle on any screen size. A full-width swipe turns 180 degrees, so a quarter turn
+        // costs half a swipe - reachable with one thumb without repositioning.
         let lookRadPerPx = 0.002;
-        const LOOK_SWIPE_TURN = Math.PI * 0.6;
+        const LOOK_SWIPE_TURN = Math.PI;
 
         if (isMobile) {
             // Hide desktop HUD, show mobile controls
@@ -3127,7 +3129,88 @@
                 }
             }, { once: true });
 
-            // Right-side look joystick (trackpad style)
+            // Work screens play muted because that is the only autoplay iOS grants, so
+            // there has to be a way to ask for sound. The YouTube player's own unmute control
+            // is unreachable: the iframe sits behind the hole-punched panel and never sees
+            // the touch. This talks to the embed over postMessage, which the enablejsapi=1
+            // URL already allows - no YT.Player wrapper, so the iframe is not re-initialised
+            // and the video does not restart. Being inside the tap is what makes iOS honour
+            // the unmute at all.
+            document.getElementById('mobile-unmute').addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const live = ytScreens.find(sc => sc.playing && !sc.paused);
+                const frame = live && live.container ? live.container.querySelector('iframe') : null;
+                if (!frame || !frame.contentWindow) return;
+                for (const cmd of [{ func: 'unMute', args: [] },
+                                   { func: 'setVolume', args: [100] },
+                                   { func: 'playVideo', args: [] }]) {
+                    frame.contentWindow.postMessage(
+                        JSON.stringify({ event: 'command', ...cmd }), '*');
+                }
+                live.unmuted = true;
+            }, { passive: false });
+
+            // Left half: hold and steer. Four separate buttons meant lifting a thumb and
+            // finding another one to change direction, which is what made moving about feel
+            // stop-start. Here the direction is wherever the finger has travelled from where
+            // it landed, so you can swing from forward to strafe without letting go.
+            // It drives the same keyStates the keyboard sets, so idle-lock, head bob and the
+            // step-up all keep working with no notion that a touch was involved.
+            const moveZone = document.getElementById('mobile-move-zone');
+            let moveTouchId = null, moveOriginX = 0, moveOriginY = 0;
+            const MOVE_DEADZONE = 14;   // px before a hold counts as a direction
+
+            function clearMoveKeys() {
+                keyStates['KeyW'] = false; keyStates['KeyS'] = false;
+                keyStates['KeyA'] = false; keyStates['KeyD'] = false;
+            }
+
+            moveZone.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                for (const touch of e.changedTouches) {
+                    if (moveTouchId === null) {
+                        moveTouchId = touch.identifier;
+                        moveOriginX = touch.clientX;
+                        moveOriginY = touch.clientY;
+                        moveTapStartT = performance.now();
+                        moveTapTravel = 0;
+                    }
+                }
+            }, { passive: false });
+
+            moveZone.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                for (const touch of e.changedTouches) {
+                    if (touch.identifier !== moveTouchId) continue;
+                    const dx = touch.clientX - moveOriginX;
+                    const dy = touch.clientY - moveOriginY;
+                    moveTapTravel = Math.max(moveTapTravel, Math.abs(dx) + Math.abs(dy));
+                    // Offset from the landing point, not the last move: the finger stays put
+                    // and keeps walking, exactly like leaning a stick.
+                    keyStates['KeyW'] = dy < -MOVE_DEADZONE;
+                    keyStates['KeyS'] = dy > MOVE_DEADZONE;
+                    keyStates['KeyA'] = dx < -MOVE_DEADZONE;
+                    keyStates['KeyD'] = dx > MOVE_DEADZONE;
+                    resetPlayerIdle();
+                }
+            }, { passive: false });
+
+            const endMove = (e) => {
+                for (const touch of e.changedTouches) {
+                    if (touch.identifier !== moveTouchId) continue;
+                    // A short still touch on this half is a tap, same as the look half.
+                    if (mobileActive && moveTapTravel < TAP_SLOP &&
+                        performance.now() - moveTapStartT < TAP_TIME) {
+                        tapAt(touch.clientX, touch.clientY);
+                    }
+                    moveTouchId = null;
+                    clearMoveKeys();
+                }
+            };
+            moveZone.addEventListener('touchend', endMove, { passive: true });
+            moveZone.addEventListener('touchcancel', () => { moveTouchId = null; clearMoveKeys(); });
+
+            // Right-side look drag
             const lookZone = document.getElementById('mobile-look-zone');
 
             lookZone.addEventListener('touchstart', (e) => {
@@ -3206,10 +3289,6 @@
                     el.classList.remove('pressed');
                 });
             }
-            bindMobileBtn('mobile-fwd', 'KeyW');
-            bindMobileBtn('mobile-back', 'KeyS');
-            bindMobileBtn('mobile-left', 'KeyA');
-            bindMobileBtn('mobile-right', 'KeyD');
             bindMobileBtn('mobile-jump', 'Space');
 
         }
@@ -3220,6 +3299,7 @@
         const tapRaycaster = new THREE.Raycaster();
         const _tapNdc = new THREE.Vector2();
         let tapStartX = 0, tapStartY = 0, tapStartT = 0, tapTravel = 0;
+        let moveTapStartT = 0, moveTapTravel = 0;
         const TAP_SLOP = 14;    // px of finger travel still counted as a tap, not a drag
         const TAP_TIME = 500;   // ms
 
@@ -3230,7 +3310,18 @@
             tapRaycaster.far = raycaster.far;
             tapRaycaster.layers.mask = raycaster.layers.mask;
             const hits = tapRaycaster.intersectObjects(scene.children, true);
-            if (hits.length > 0) handleAction(hits[0]);
+            if (hits.length === 0) return;
+
+            // handleAction silently ignores anything out of reach. On a mouse that barely
+            // matters because the crosshair only lights up in range; tapping straight at a
+            // screen across the room and getting nothing back just reads as broken. Say so.
+            const hit = hits[0];
+            const type = hit.object.userData && hit.object.userData.type;
+            if (type && hit.distance > interactRange(type)) {
+                setPrompt('MOVE CLOSER');
+                return;
+            }
+            handleAction(hit);
         }
 
         // Apply the touch-look orientation each frame. Rotation is accumulated in the
@@ -3995,145 +4086,61 @@
                         // vertical and moved you nowhere, and you had to jump over a 3.6cm
                         // lip. Attempt it on any collision while grounded and moving; a
                         // no-op on flat ground costs one probe and is reverted below.
-                        // Only when actually STOPPED, not merely in contact. A successful
-                        // step shoves the capsule forward by 1.6 radii in one frame - about
-                        // 9 units/sec at 60fps, far above walking speed. Brushing along a
-                        // tunnel or wall satisfied every other condition, so it re-fired every
-                        // frame and the push compounded into a sudden lurch that read as
-                        // teleporting. Sliding along a surface still moves you, so requiring
-                        // most of the intended motion to have been eaten confines the step to
-                        // things that genuinely bar the way - a lip or a threshold.
-                        const _movedH = Math.hypot(playerCapsule.start.x - _preX,
-                                                   playerCapsule.start.z - _preZ);
-                        const blockedThisFrame = _wantH > 1e-6 && _movedH < _wantH * 0.5;
-
-                        if (wasOnGround && isMovingKeys && blockedThisFrame) {
-                            // 0.5 was inherited from the old world, where it was most of a
-                            // body height. In a 0.60-clearance tunnel it lifts the capsule
-                            // straight into the ceiling, and the resulting push-out is what
-                            // fired the player sideways out of `theater 1 tunnel`.
-                            // 0.20 is ~40% of the 0.50 capsule — still a generous stair rise.
+                        // Step over a low lip by RISING over it, not by being shoved through
+                        // it. Pushing the capsule forward 1.6 radii the instant a step
+                        // succeeded was a 9 units/sec teleport against a 1.2 walk, and gating
+                        // that on "was I fully stopped" only traded the lurch for a doorway
+                        // that needed a dead-straight approach: 15 degrees off, you slide
+                        // along the threshold rather than stopping, so no step was attempted.
+                        //
+                        // Rising has neither fault. Take the SMALLEST lift that clears, leave
+                        // the player airborne above the obstruction, and let their own
+                        // velocity carry them across. No position jumps, and it cannot repeat
+                        // or compound: once airborne, wasOnGround is false next frame.
+                        if (wasOnGround && isMovingKeys) {
                             const STEP = 0.20;
                             const preStepStart = playerCapsule.start.clone();
                             const preStepEnd = playerCapsule.end.clone();
-
-                            // Try the tallest lift that FITS, not one fixed lift. The gallery
-                            // doorway is why: its sill is only 0.11 tall, well under STEP, but
-                            // the lintel leaves 0.62 of headroom over a 0.50 capsule. Lifting
-                            // the full 0.20 drove the capsule 0.08 into that ceiling, which
-                            // reads as "wall, not ledge", so the step bailed every frame and
-                            // the only way in was to jump. Descending ladder: the doorway
-                            // clears at 0.12, open ledges still get the full 0.20.
-                            const LIFTS = [STEP, 0.15, 0.12, 0.10, 0.07, 0.05];
+                            const fwd = new THREE.Vector3(playerVelocity.x, 0, playerVelocity.z);
                             let stepped = false;
 
-                            for (const lift of LIFTS) {
-                                playerCapsule.start.copy(preStepStart);
-                                playerCapsule.end.copy(preStepEnd);
-                                playerCapsule.translate(new THREE.Vector3(0, lift, 0));
+                            if (fwd.lengthSq() > 1e-6) {
+                                fwd.normalize();
+                                for (const lift of [0.04, 0.06, 0.09, 0.12, 0.16, STEP]) {
+                                    playerCapsule.start.copy(preStepStart);
+                                    playerCapsule.end.copy(preStepEnd);
+                                    playerCapsule.translate(new THREE.Vector3(0, lift, 0));
 
-                                const stepCheck = worldOctree.capsuleIntersect(playerCapsule);
-                                if (stepCheck && stepCheck.depth > 0.02) {
-                                    // No headroom at this lift. Don't resolve it — resolving a
-                                    // penetration this deep shoves the capsule a long way
-                                    // sideways and teleports the player. Just try a shorter one.
-                                    continue;
-                                }
-                                if (stepCheck) {
-                                    playerCapsule.translate(stepCheck.normal.clone().multiplyScalar(stepCheck.depth));
-                                }
-                                // Advance while raised, before feeling for ground. The collision
-                                // above has already pushed the capsule back OFF the ledge, so
-                                // probing straight down from here just finds the floor we were
-                                // already on and the step reads as a failure. Nudging forward by
-                                // a radius puts the capsule over the ledge before the probe.
-                                const stepFwd = new THREE.Vector3(playerVelocity.x, 0, playerVelocity.z);
-                                if (stepFwd.lengthSq() > 1e-6) {
-                                    stepFwd.normalize();
-                                    // Does the nudge pass THROUGH something? An Octree is triangle
-                                    // soup with no notion of inside: a capsule that clears a wall's
-                                    // near face reports no collision at all in the hollow beyond,
-                                    // so "did I land somewhere clear" cannot tell stepping over a
-                                    // threshold from tunnelling into a wall. A ray at the lifted
-                                    // height can: it clears a real lip (that is what the lift is
-                                    // for) and hits a real wall.
-                                    const reach = PLAYER_RADIUS * 1.6;
+                                    const hit = worldOctree.capsuleIntersect(playerCapsule);
+                                    if (hit && hit.depth > 0.02) continue;   // no headroom here
+
+                                    // Is the way ahead open once raised? An Octree is triangle
+                                    // soup with no notion of inside: a capsule that clears a
+                                    // wall's near face reports nothing at all in the hollow
+                                    // beyond, so only a ray can tell a lip from a wall. A taller
+                                    // lift may still clear a taller lip, so keep trying rather
+                                    // than giving up on the first obstruction.
                                     _stepRay.origin.copy(playerCapsule.start);
-                                    _stepRay.direction.copy(stepFwd);
-                                    const blockedFwd = worldOctree.rayIntersect(_stepRay);
-                                    if (blockedFwd && blockedFwd.distance <= reach + PLAYER_RADIUS) {
-                                        continue;   // a face is in the way — not a ledge
-                                    }
-                                    playerCapsule.translate(stepFwd.multiplyScalar(reach));
-                                }
-                                // Feel for ground on the way back down instead of dropping the
-                                // whole lift and demanding a hit at the bottom, and probe a
-                                // little PAST the lift. Stopping exactly at the lift is what
-                                // still blocked the gallery doorway after the lifts were fixed:
-                                // the floor past its threshold sits 1.2cm LOWER than the
-                                // corridor, so the capsule came back down to its original
-                                // height, found no ground, and the step was scored a failure.
-                                // 0.04 of slack is the most that can be allowed — at 0.08 the
-                                // probe reaches through solid walls and the player steps
-                                // straight into them.
-                                let settled = false;
-                                const DROP = 0.04;
-                                const PROBE = 0.01;
-                                const PROBE_STEPS = Math.ceil((lift + DROP) / PROBE);
-                                for (let i = 0; i < PROBE_STEPS && !settled; i++) {
-                                    playerCapsule.translate(new THREE.Vector3(0, -PROBE, 0));
-                                    const g = worldOctree.capsuleIntersect(playerCapsule);
-                                    if (g && g.normal.y > 0.5) {
-                                        playerCapsule.translate(g.normal.clone().multiplyScalar(g.depth));
-                                        // Accept on "did we land somewhere clear", not "did we
-                                        // rise". Requiring a rise is what kept the gallery
-                                        // doorway shut: its threshold is a 2cm lip with the SAME
-                                        // floor on both sides, so a successful step over it nets
-                                        // zero rise and got reverted every frame. The forward
-                                        // nudge is only 1.6 radii, so anything thicker than that
-                                        // still traps the capsule and is rejected here — which is
-                                        // what stops the player creeping into walls. Tall walls
-                                        // never get this far: they still collide after the lift.
-                                        // The upper bound stays, or the push-out lands the player
-                                        // on top of anything the nudge reached into — a 0.45
-                                        // block against a 0.50 player, which is vaulting.
-                                        const rise = playerCapsule.start.y - preStepStart.y;
-                                        // Is the landing spot actually free? A single
-                                        // capsuleIntersect can't answer that: it reports ONE
-                                        // contact, and for a capsule buried in a wall it usually
-                                        // returns the FLOOR at ~0 depth, hiding the wall
-                                        // completely — which let the player walk clean through a
-                                        // 0.9 slab. So resolve several contacts on a scratch copy
-                                        // and look at how far it gets shoved HORIZONTALLY: the
-                                        // floor pushes straight up and contributes nothing, while
-                                        // anything embedded in a wall shows up as real sideways
-                                        // correction.
-                                        const probe = playerCapsule.clone();
-                                        const push = new THREE.Vector3();
-                                        for (let k = 0; k < 4; k++) {
-                                            const c = worldOctree.capsuleIntersect(probe);
-                                            if (!c) break;
-                                            const d = c.normal.clone().multiplyScalar(c.depth);
-                                            probe.translate(d);
-                                            push.add(d);
-                                        }
-                                        const clearAhead = Math.hypot(push.x, push.z) <= 0.04;
-                                        if (clearAhead && rise >= -(DROP + 0.02) && rise <= STEP + 0.01) {
-                                            playerOnGround = true;
-                                            groundNormal.copy(g.normal);
-                                            playerVelocity.y = 0;
-                                            settled = true;
-                                        }
-                                    }
-                                }
-                                if (settled) { stepped = true; break; }
-                            }
+                                    _stepRay.direction.copy(fwd);
+                                    const ahead = worldOctree.rayIntersect(_stepRay);
+                                    if (ahead && ahead.distance <= PLAYER_RADIUS * 2.0) continue;
 
+                                    if (hit) playerCapsule.translate(hit.normal.clone().multiplyScalar(hit.depth));
+                                    // Carry the rise in VELOCITY, not just position. The lift
+                                    // alone buys about 0.08s of airtime - roughly 0.1 units of
+                                    // walking - so the player came straight back down onto the
+                                    // lip edge and stopped. Hopping just high enough to clear
+                                    // the obstruction plus a margin gives them the time to
+                                    // cross, and being a velocity it stays smooth rather than
+                                    // jumping the position the way the old forward shove did.
+                                    playerOnGround = false;
+                                    const hop = Math.sqrt(2 * 12.0 * (lift + 0.03));
+                                    playerVelocity.y = Math.max(playerVelocity.y, hop);
+                                    stepped = true;
+                                    break;
+                                }
+                            }
                             if (!stepped) {
-                                // No ledge reachable at any lift. Put the capsule back exactly
-                                // where it was — the forward nudge may have left it inside
-                                // whatever we walked into, and keeping that would let the
-                                // player sink through solid geometry.
                                 playerCapsule.start.copy(preStepStart);
                                 playerCapsule.end.copy(preStepEnd);
                             }
@@ -4202,6 +4209,13 @@
                     const el = document.getElementById(id);
                     if (el && el.style.display !== show) el.style.display = show;
                 }
+
+                // Offer sound only while a work screen is actually running, and drop the
+                // offer once it has been taken.
+                const live = ytScreens.find(sc => sc.playing && !sc.paused && !sc.unmuted);
+                const um = document.getElementById('mobile-unmute');
+                const umShow = live ? 'flex' : 'none';
+                if (um && um.style.display !== umShow) um.style.display = umShow;
             }
 
             if (isPlayerActive()) {
@@ -4238,7 +4252,9 @@
                     } else if (type === 'vimeo_screen') {
                         const scr = vimeoScreens.find(s => s.videoId === target.userData.videoId);
                         const label = scr && scr.title ? `: ${scr.title}` : '';
-                        if (scr && scr.playing && !scr.paused) prompt = "CLICK TO PAUSE";
+                        // Mobile has no player API attached, so a second tap closes the
+                        // screen rather than pausing it. Say what actually happens.
+                        if (scr && scr.playing && !scr.paused) prompt = isMobile ? "TAP TO STOP" : "CLICK TO PAUSE";
                         else if (scr && scr.paused) prompt = "CLICK TO RESUME";
                         else prompt = `CLICK TO PLAY${label}`;
                     } else if (type === 'menu_hitbox' || type === 'select_film') {
