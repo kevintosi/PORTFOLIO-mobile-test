@@ -1526,10 +1526,16 @@
         // WebKit does not decode VP9 alpha in WebM, so on iOS the shaft clip rendered as an
         // opaque black square. The alpha equivalent Apple does support is HEVC in MP4, which
         // is what webmtest-alpha.mp4 is. Chrome/Firefox keep the smaller .webm.
-        const APPLE_BROWSER = /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent)
-                           || /iPad|iPhone|iPod/.test(navigator.userAgent);
-        const ALPHA_MP4 = { './VIDS/webmtest.webm': './VIDS/webmtest-alpha.mp4' };
-        const alphaSrcFor = (src) => (APPLE_BROWSER && ALPHA_MP4[src]) ? ALPHA_MP4[src] : src;
+        // Neither alpha video format survives the trip into a WebGL texture on iOS. The
+        // HEVC file genuinely carries alpha - 93% of its pixels decode as transparent - but
+        // WebKit hands the texture over opaque, so the clip rendered as a black square.
+        // The way round it is to stop asking the codec for alpha at all: the matte travels
+        // as ordinary picture, stacked under the colour in one 1024x2048 H.264 file, and is
+        // reassembled here. Plain H.264 with no alpha channel plays everywhere, so this one
+        // file replaces the webm/HEVC split rather than adding a third case - and at 2.3MB
+        // it is smaller than either.
+        const STACKED_MATTE = { './VIDS/webmtest.webm': './VIDS/webmtest-matte.mp4' };
+        const alphaSrcFor = (src) => STACKED_MATTE[src] || src;
 
         function setupBillboardVideo(src, x, y, z, size = 2.5, playWithin = 10, fullVolumeAt = 2.5,
                                      loop = true, playOnce = false, startWithin = null,
@@ -1547,18 +1553,37 @@
             video.muted = false;
             video.volume = 0;          // ramped by distance in the animation loop
 
+            const stacked = !!STACKED_MATTE[src];
+
             const tex = new THREE.VideoTexture(video);
             tex.colorSpace = THREE.SRGBColorSpace;
+
+            let alphaTex = null;
+            if (stacked) {
+                // Two textures over the SAME <video>, each windowed onto one half: colour on
+                // top, matte below. Doing it with map + alphaMap rather than a custom shader
+                // keeps three's own colour-space and tone-mapping handling intact - a
+                // hand-written ShaderMaterial has to redo the sRGB decode by hand and gets
+                // the picture subtly wrong. alphaMap reads the green channel, and the matte
+                // is grey, so any channel would do.
+                tex.repeat.set(1, 0.5);
+                tex.offset.set(0, 0.5);
+                alphaTex = new THREE.VideoTexture(video);
+                alphaTex.colorSpace = THREE.NoColorSpace;   // a mask, not a picture
+                alphaTex.repeat.set(1, 0.5);
+                alphaTex.offset.set(0, 0);
+            }
+
             const mesh = new THREE.Mesh(
                 // scene1.webm is square (2000x2000), so the plane is 1:1 — not 16:9.
                 new THREE.PlaneGeometry(size, size),
                 new THREE.MeshBasicMaterial({
                     map: tex,
+                    alphaMap: alphaTex,
                     toneMapped: false,
                     side: THREE.DoubleSide,
-                    // The webm is VP9 with an alpha layer (~76% of the frame is fully
-                    // transparent). Without transparent:true three.js ignores that channel
-                    // and the clip renders as an opaque square.
+                    // Without transparent:true three.js ignores the alpha and the clip
+                    // renders as an opaque square.
                     transparent: true,
                     // ...and without this the quad still writes depth across its transparent
                     // region, so the cut-out area would occlude whatever is behind it.
