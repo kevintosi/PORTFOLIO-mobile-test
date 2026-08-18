@@ -185,12 +185,6 @@
             font-size: 16px; font-weight: bold;
             border-radius: 18px;
         }
-        #mobile-interact {
-            width: 60px; height: 60px;
-            bottom: 85px; right: 110px;
-            font-size: 14px; font-weight: bold;
-            border-radius: 14px;
-        }
 
         .browse-btn {
             width: 56px; height: 56px;
@@ -208,7 +202,10 @@
             position: absolute;
             top: 0;
             right: 0;
-            width: 55%;
+            /* Full width, not 55%. Tapping an object is done by touching the object itself
+               now, so the surface that receives touches has to cover everything. The control
+               buttons sit above this in z-order and still take their own taps. */
+            width: 100%;
             height: 100%;
             pointer-events: auto;
             touch-action: none;
@@ -228,7 +225,6 @@
         <div id="mobile-left" class="mobile-btn">◀</div>
         <div id="mobile-right" class="mobile-btn">▶</div>
         <div id="mobile-jump" class="mobile-btn">JUMP</div>
-        <div id="mobile-interact" class="mobile-btn">TAP</div>
         <!-- Browsing the shorts carousel and the photo gallery was mouse-wheel only, which a
              phone has no equivalent of. These appear only when there is something to page
              through, and drive the same index the wheel does. -->
@@ -1081,11 +1077,14 @@
 
         function toggleYtScreen(screenData) {
             if (screenData.playing && !screenData.paused) {
-                // Pause
                 if (screenData.player) {
                     try { screenData.player.pauseVideo(); } catch(e) {}
+                    screenData.paused = true;
+                } else {
+                    // Mobile has no JS API attached (see below), so there is no player to
+                    // pause - tapping a running screen closes it and puts the still back.
+                    stopYtScreen(screenData);
                 }
-                screenData.paused = true;
             } else if (screenData.playing && screenData.paused) {
                 // Resume
                 if (screenData.player) {
@@ -1120,8 +1119,12 @@
                 screenData.playing = true;
                 screenData.paused = false;
 
-                // Init YT player API for unmute
-                if (ytApiReady && window.YT) {
+                // Desktop only. Constructing a YT.Player over the iframe re-initialises the
+                // embed, and on iOS that second start is no longer covered by the tap that
+                // began it - so the video appeared, then sat paused on its first frame. The
+                // API was only ever attached to unmute, which iOS refuses anyway, so on
+                // mobile the plain iframe is left to autoplay on its own.
+                if (!isMobile && ytApiReady && window.YT) {
                     const iframe = screenData.container.querySelector('iframe');
                     if (iframe) {
                         screenData.player = new window.YT.Player(iframe, {
@@ -3072,7 +3075,9 @@
                 initAudio();
                 mobileActive = true;
                 document.getElementById('instructions').style.display = 'none';
-                document.getElementById('crosshair').style.display = 'block';
+                // No crosshair: you tap the thing itself now, so a centre reticle would
+                // only suggest an aiming step that no longer exists.
+                document.getElementById('crosshair').style.display = 'none';
                 document.getElementById('mobile-controls').classList.add('active');
 
                 // iOS only lets a <video> play programmatically once it has been played
@@ -3108,6 +3113,11 @@
                         lookLastX = touch.clientX;
                         lookLastY = touch.clientY;
                         lookRadPerPx = LOOK_SWIPE_TURN / Math.max(1, window.innerWidth);
+                        // Kept so touchend can tell a tap from a drag.
+                        tapStartX = touch.clientX;
+                        tapStartY = touch.clientY;
+                        tapStartT = performance.now();
+                        tapTravel = 0;
                     }
                 }
             }, { passive: false });
@@ -3125,6 +3135,7 @@
                         lookLastX = touch.clientX;
                         lookLastY = touch.clientY;
 
+                        tapTravel += Math.abs(dx) + Math.abs(dy);
                         mobileYaw -= dx * lookRadPerPx;
                         mobilePitch -= dy * lookRadPerPx;      // -= : dragging down looks down
                         mobilePitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, mobilePitch));
@@ -3135,6 +3146,14 @@
             lookZone.addEventListener('touchend', (e) => {
                 for (const touch of e.changedTouches) {
                     if (touch.identifier === lookTouchId) {
+                        // A short, still touch is a tap on whatever is under the finger.
+                        // Aiming a crosshair by rotating the room and then reaching for a
+                        // separate TAP button is a game convention; touching the thing you
+                        // want is what everyone else already does.
+                        const held = performance.now() - tapStartT;
+                        if (mobileActive && tapTravel < TAP_SLOP && held < TAP_TIME) {
+                            tapAt(touch.clientX, touch.clientY);
+                        }
                         lookTouchId = null;
                     }
                 }
@@ -3168,14 +3187,25 @@
             bindMobileBtn('mobile-right', 'KeyD');
             bindMobileBtn('mobile-jump', 'Space');
 
-            // Mobile interact button (tap to click on whatever crosshair is pointing at)
-            document.getElementById('mobile-interact').addEventListener('touchstart', (e) => {
-                e.preventDefault();
-                if (mobileActive) {
-                    const intersects = raycaster.intersectObjects(scene.children, true);
-                    if (intersects.length > 0) handleAction(intersects[0]);
-                }
-            }, { passive: false });
+        }
+
+        // Hit-test straight from the fingertip. The shared `raycaster` is aimed down the
+        // camera axis for the crosshair and the hover prompt, so this uses its own and only
+        // borrows the layer mask and range, which decide what is interactive right now.
+        const tapRaycaster = new THREE.Raycaster();
+        const _tapNdc = new THREE.Vector2();
+        let tapStartX = 0, tapStartY = 0, tapStartT = 0, tapTravel = 0;
+        const TAP_SLOP = 14;    // px of finger travel still counted as a tap, not a drag
+        const TAP_TIME = 500;   // ms
+
+        function tapAt(clientX, clientY) {
+            _tapNdc.set((clientX / window.innerWidth) * 2 - 1,
+                        -(clientY / window.innerHeight) * 2 + 1);
+            tapRaycaster.setFromCamera(_tapNdc, camera);
+            tapRaycaster.far = raycaster.far;
+            tapRaycaster.layers.mask = raycaster.layers.mask;
+            const hits = tapRaycaster.intersectObjects(scene.children, true);
+            if (hits.length > 0) handleAction(hits[0]);
         }
 
         // Apply the touch-look orientation each frame. Rotation is accumulated in the
@@ -3918,6 +3948,11 @@
                     playerVelocity.addScaledVector(playerVelocity, Math.exp(-4 * pDelta) - 1);
 
                     const wasOnGround = playerOnGround;
+                    // Where the frame wanted to take us, horizontally, and where it actually
+                    // did. The step-up below is only appropriate when something STOPPED us;
+                    // see the `blockedThisFrame` test for why.
+                    const _preX = playerCapsule.start.x, _preZ = playerCapsule.start.z;
+                    const _wantH = Math.hypot(playerVelocity.x, playerVelocity.z) * pDelta;
                     playerCapsule.translate(playerVelocity.clone().multiplyScalar(pDelta));
                     const result = worldOctree.capsuleIntersect(playerCapsule);
                     playerOnGround = false;
@@ -3935,7 +3970,19 @@
                         // vertical and moved you nowhere, and you had to jump over a 3.6cm
                         // lip. Attempt it on any collision while grounded and moving; a
                         // no-op on flat ground costs one probe and is reverted below.
-                        if (wasOnGround && isMovingKeys) {
+                        // Only when actually STOPPED, not merely in contact. A successful
+                        // step shoves the capsule forward by 1.6 radii in one frame - about
+                        // 9 units/sec at 60fps, far above walking speed. Brushing along a
+                        // tunnel or wall satisfied every other condition, so it re-fired every
+                        // frame and the push compounded into a sudden lurch that read as
+                        // teleporting. Sliding along a surface still moves you, so requiring
+                        // most of the intended motion to have been eaten confines the step to
+                        // things that genuinely bar the way - a lip or a threshold.
+                        const _movedH = Math.hypot(playerCapsule.start.x - _preX,
+                                                   playerCapsule.start.z - _preZ);
+                        const blockedThisFrame = _wantH > 1e-6 && _movedH < _wantH * 0.5;
+
+                        if (wasOnGround && isMovingKeys && blockedThisFrame) {
                             // 0.5 was inherited from the old world, where it was most of a
                             // body height. In a 0.60-clearance tunnel it lifts the capsule
                             // straight into the ceiling, and the resulting push-out is what
