@@ -871,7 +871,13 @@
         // This defaulted to the theater's proximity volume for a while, which silently
         // muted every work screen: outside the theater that value is 0.
         function applyPlayerPrefs(player, volumePercent = 100) {
-            try { player.unMute(); player.setVolume(Math.round(volumePercent)); } catch (e) {}
+            // Not on mobile. iOS suspends an embed the moment it is unmuted without a user
+            // gesture behind it, and this runs from onReady/onStateChange - always async,
+            // always outside the tap. That is why tapping a work screen loaded the video and
+            // then paused it immediately. Muted playback is the only kind that survives.
+            if (!isMobile) {
+                try { player.unMute(); player.setVolume(Math.round(volumePercent)); } catch (e) {}
+            }
             try { player.unloadModule('captions'); } catch (e) {}
             try { player.unloadModule('cc'); } catch (e) {}
         }
@@ -1097,7 +1103,10 @@
                 screenData.frontMat.needsUpdate = true;
 
                 const origin = encodeURIComponent(window.location.origin);
-                const embedSrc = `https://www.youtube.com/embed/${screenData.videoId}?enablejsapi=1&origin=${origin}&autoplay=1&rel=0&playsinline=1&cc_load_policy=0`;
+                // mute=1 on mobile: without it iOS refuses the autoplay outright, so the
+                // panel punched its hole and then showed a stalled player.
+                const muteParam = isMobile ? '&mute=1' : '';
+                const embedSrc = `https://www.youtube.com/embed/${screenData.videoId}?enablejsapi=1&origin=${origin}&autoplay=1&rel=0&playsinline=1&cc_load_policy=0${muteParam}`;
                 screenData.container.innerHTML = `
                     <div style="width:100%;height:100%;position:relative;">
                         <iframe src="${embedSrc}" frameborder="0"
@@ -1658,6 +1667,15 @@
 
             billboards.push(bb);
             return bb;
+        }
+
+        // Every local <video> in the world. They are created detached and never inserted
+        // into the document, so document.querySelectorAll('video') does not see them.
+        function allLocalVideos() {
+            const out = [];
+            for (const bb of billboards) if (bb.video) out.push(bb.video);
+            for (const sc of localScreens) if (sc.video) out.push(sc.video);
+            return out;
         }
 
         function playBillboard(bb) {
@@ -3040,9 +3058,9 @@
         // around feel violent and never the same twice.
         let lookLastX = 0, lookLastY = 0;
         // Radians per pixel, set per gesture from the viewport so a drag covers the same
-        // angle on any screen size. A full-width swipe turns 90 degrees.
+        // angle on any screen size. A full-width swipe turns 108 degrees.
         let lookRadPerPx = 0.002;
-        const LOOK_SWIPE_TURN = Math.PI / 2;
+        const LOOK_SWIPE_TURN = Math.PI * 0.6;
 
         if (isMobile) {
             // Hide desktop HUD, show mobile controls
@@ -3056,6 +3074,27 @@
                 document.getElementById('instructions').style.display = 'none';
                 document.getElementById('crosshair').style.display = 'block';
                 document.getElementById('mobile-controls').classList.add('active');
+
+                // iOS only lets a <video> play programmatically once it has been played
+                // inside a real user gesture. Proximity playback happens later, from the
+                // animation loop, which is NOT a gesture - so every clip in the world was
+                // being refused and the panels sat black. This tap is the one gesture we are
+                // guaranteed, so start and immediately stop each clip here to unlock it;
+                // afterwards the loop can start them on approach, with sound.
+                // preload stays 'none' and the pause lands in the same tick, so this costs a
+                // few KB per clip rather than pulling all the video down at once - which is
+                // what was crashing the phone before.
+                for (const v of allLocalVideos()) {
+                    const wasMuted = v.muted;
+                    v.muted = true;                  // muted play is the only kind iOS grants
+                    const pr = v.play();
+                    if (pr && pr.then) {
+                        pr.then(() => { v.pause(); v.currentTime = 0; v.muted = wasMuted; })
+                          .catch(() => { v.muted = wasMuted; });
+                    } else {
+                        v.pause(); v.currentTime = 0; v.muted = wasMuted;
+                    }
+                }
             }, { once: true });
 
             // Right-side look joystick (trackpad style)
