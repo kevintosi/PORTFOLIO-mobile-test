@@ -3175,7 +3175,7 @@
         // Update camera from touch joystick each frame
         let lookOffsetX = 0, lookOffsetY = 0, lookLastT = 0;
         const LOOK_DEADZONE = 6;      // px of slop before a held finger starts steering
-        const LOOK_TURN_RATE = 1.2;   // radians/sec at full deflection (halved: 2.4 was too twitchy)
+        const LOOK_TURN_RATE = 0.6;   // radians/sec at full deflection (2.4 -> 1.2 -> 0.6; 2.4 was very twitchy)
 
         function updateMobileCamera() {
             if (!isMobile || !mobileActive) return;
