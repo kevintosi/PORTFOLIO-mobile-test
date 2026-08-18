@@ -3115,8 +3115,13 @@
                         lookOffsetY = clampedDy;
 
                         // A little 1:1 movement on top, so short drags still feel direct.
-                        mobileYaw -= dx * 0.0016;
-                        mobilePitch -= dy * 0.0016;      // -= : dragging down looks down
+                        // Rate-matched to LOOK_TURN_RATE: a brisk flick moves the finger about
+                        // 1000px/sec, so 0.0006 rad/px peaks at ~0.6 rad/sec - the same speed
+                        // the held-edge turn tops out at. At the old 0.0016 the flick ran ~2.5x
+                        // faster than the hold, which read as the look being twitchy no matter
+                        // how far LOOK_TURN_RATE came down.
+                        mobileYaw -= dx * 0.0006;
+                        mobilePitch -= dy * 0.0006;      // -= : dragging down looks down
                         mobilePitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, mobilePitch));
                     }
                 }
