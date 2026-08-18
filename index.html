@@ -170,6 +170,35 @@
             border-radius: 18px;
         }
 
+        /* Which half does what. The zones are invisible, so without these there is nothing
+           to say a drag on the left walks and a drag on the right looks. */
+        .zone-hint {
+            position: absolute;
+            bottom: 26px;
+            pointer-events: none;
+            opacity: 0.34;
+            color: rgba(255,255,255,0.95);
+            text-align: center;
+            z-index: 5;
+        }
+        #mobile-move-hint { left: 14%; transform: translateX(-50%); }
+        #mobile-look-hint { right: 14%; transform: translateX(50%); }
+        .hint-cross {
+            display: grid;
+            grid-template-columns: repeat(3, 20px);
+            grid-template-rows: repeat(3, 17px);
+            align-items: center; justify-items: center;
+            font-size: 13px; line-height: 1;
+        }
+        .hint-label { margin-top: 5px; font-size: 9px; letter-spacing: 1.4px; }
+
+        #mobile-run {
+            width: 75px; height: 46px;
+            bottom: 170px; right: 20px;
+            font-size: 14px; font-weight: bold;
+            border-radius: 14px;
+        }
+
         #mobile-unmute {
             width: 86px; height: 44px;
             bottom: 20px; right: 20px;
@@ -223,7 +252,24 @@
     <div id="crosshair">+</div>
 
     <div id="mobile-controls">
+        <div id="mobile-run" class="mobile-btn">RUN</div>
         <div id="mobile-jump" class="mobile-btn">JUMP</div>
+        <div id="mobile-move-hint" class="zone-hint">
+            <div class="hint-cross">
+                <span></span><span>&#9650;</span><span></span>
+                <span>&#9664;</span><span>&#9679;</span><span>&#9654;</span>
+                <span></span><span>&#9660;</span><span></span>
+            </div>
+            <div class="hint-label">DRAG TO MOVE</div>
+        </div>
+        <div id="mobile-look-hint" class="zone-hint">
+            <div class="hint-cross">
+                <span></span><span>&#9650;</span><span></span>
+                <span>&#9664;</span><span>&#9675;</span><span>&#9654;</span>
+                <span></span><span>&#9660;</span><span></span>
+            </div>
+            <div class="hint-label">DRAG TO LOOK</div>
+        </div>
         <div id="mobile-unmute" class="mobile-btn">UNMUTE</div>
         <!-- Browsing the shorts carousel and the photo gallery was mouse-wheel only, which a
              phone has no equivalent of. These appear only when there is something to page
@@ -1059,8 +1105,21 @@
 
         // Tear an embed down and put the thumbnail back. Each live iframe is a full
         // YouTube player, so only one screen in the world may hold one at a time.
+        // Drive an embed straight over postMessage. enablejsapi=1 is already on the URL, so
+        // this needs no YT.Player wrapper - which matters on mobile, where constructing one
+        // re-initialises the iframe and restarts the video.
+        function ytCommand(screenData, func, args = []) {
+            const frame = screenData.container ? screenData.container.querySelector('iframe') : null;
+            if (!frame || !frame.contentWindow) return;
+            frame.contentWindow.postMessage(
+                JSON.stringify({ event: 'command', func, args }), '*');
+        }
+
         function stopYtScreen(screenData) {
             if (!screenData.playing) return;
+            // The offer of sound belongs to one playing, not to the screen forever. Without
+            // this the UNMUTE button never came back after a stop and replay.
+            screenData.unmuted = false;
             if (screenData.player) {
                 try { screenData.player.destroy(); } catch (e) {}
                 screenData.player = null;
@@ -1119,6 +1178,18 @@
                 screenData.cssObj.visible = true;
                 screenData.playing = true;
                 screenData.paused = false;
+                screenData.unmuted = false;
+
+                // cc_load_policy=0 only asks; a muted video often gets captions forced on
+                // anyway, and with the iframe behind the hole punch there is no way to switch
+                // them off by hand. Tell the player directly, once it has had time to load.
+                for (const wait of [900, 2200, 4000]) {
+                    setTimeout(() => {
+                        if (!screenData.playing) return;
+                        ytCommand(screenData, 'unloadModule', ['captions']);
+                        ytCommand(screenData, 'unloadModule', ['cc']);
+                    }, wait);
+                }
 
                 // Desktop only. Constructing a YT.Player over the iframe re-initialises the
                 // embed, and on iOS that second start is no longer covered by the tap that
@@ -2741,7 +2812,11 @@
         // thumbnails and the MENU button) sit in a 6.4m room, so they need the same long
         // reach as a standalone theater screen — at 4 you couldn't browse from the back row.
         const INTERACT_RANGE = {
-            yt_screen: 2.5, local_screen: 2.5,
+            yt_screen: 2.5,
+            // 2.5 was a reach on touch: the Slavic TV plays fine once you are on top of it,
+            // but a tap from a step further back did nothing at all. 4 makes it forgiving
+            // without letting you start it from across the room.
+            local_screen: 4,
             vimeo_screen: 8,
             video_surface: 8, menu_hitbox: 8, select_film: 8, back_menu: 8,
             _default: 4,
@@ -3129,6 +3204,17 @@
                 }
             }, { once: true });
 
+            // A latch, not a hold. Pinning a modifier down with one thumb while the other
+            // walks and looks is not workable on a phone, and Shift is what the longer jump
+            // reads too, so this is the only way to reach either on touch.
+            const runBtn = document.getElementById('mobile-run');
+            runBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const on = !keyStates['ShiftLeft'];
+                keyStates['ShiftLeft'] = on;
+                runBtn.classList.toggle('pressed', on);
+            }, { passive: false });
+
             // Work screens play muted because that is the only autoplay iOS grants, so
             // there has to be a way to ask for sound. The YouTube player's own unmute control
             // is unreachable: the iframe sits behind the hole-punched panel and never sees
@@ -3139,14 +3225,10 @@
             document.getElementById('mobile-unmute').addEventListener('touchstart', (e) => {
                 e.preventDefault();
                 const live = ytScreens.find(sc => sc.playing && !sc.paused);
-                const frame = live && live.container ? live.container.querySelector('iframe') : null;
-                if (!frame || !frame.contentWindow) return;
-                for (const cmd of [{ func: 'unMute', args: [] },
-                                   { func: 'setVolume', args: [100] },
-                                   { func: 'playVideo', args: [] }]) {
-                    frame.contentWindow.postMessage(
-                        JSON.stringify({ event: 'command', ...cmd }), '*');
-                }
+                if (!live) return;
+                ytCommand(live, 'unMute');
+                ytCommand(live, 'setVolume', [100]);
+                ytCommand(live, 'playVideo');
                 live.unmuted = true;
             }, { passive: false });
 
@@ -3315,7 +3397,12 @@
             // handleAction silently ignores anything out of reach. On a mouse that barely
             // matters because the crosshair only lights up in range; tapping straight at a
             // screen across the room and getting nothing back just reads as broken. Say so.
-            const hit = hits[0];
+            // Prefer the theater's MENU button over anything behind it. It floats in front of
+            // the screen, so the nearest hit should already be it - but a finger is not a
+            // crosshair, and catching its edge put the tap on the video surface instead,
+            // which reads as "the button just unpauses". Anywhere on it now counts.
+            const hit = hits.find(h => h.object.userData && h.object.userData.type === 'back_menu')
+                     || hits[0];
             const type = hit.object.userData && hit.object.userData.type;
             if (type && hit.distance > interactRange(type)) {
                 setPrompt('MOVE CLOSER');
@@ -4434,6 +4521,7 @@
         if (new URLSearchParams(location.search).has('debug')) {
             window.__world = {
                 THREE, scene, camera, renderer, playerCapsule, controls, ytScreens, localScreens, worldOctree, doors,
+                keyStates,
                 billboards,
                 composer, rgbShiftPass, maskTarget, renderPhotoMask,
                 galleryCards, galleryGroup, playerInGallery,
