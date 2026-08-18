@@ -2838,6 +2838,9 @@
         // prompt was rewritten every frame from the raycast, so keying the fade on "was it
         // set this frame" would have held it on screen permanently for as long as you looked
         // at anything.
+        // Reused by the step-up tunnelling check; allocating a Ray per frame would churn.
+        const _stepRay = new THREE.Ray();
+
         const _edDebugPos = new URLSearchParams(location.search).has('debug')
             ? document.getElementById('dbg-pos') : null;
         if (_edDebugPos) _edDebugPos.style.whiteSpace = 'pre';
@@ -3947,63 +3950,111 @@
                             // fired the player sideways out of `theater 1 tunnel`.
                             // 0.20 is ~40% of the 0.50 capsule — still a generous stair rise.
                             const STEP = 0.20;
-                            // Save position after pushback
                             const preStepStart = playerCapsule.start.clone();
                             const preStepEnd = playerCapsule.end.clone();
 
-                            // Lift capsule up
-                            playerCapsule.translate(new THREE.Vector3(0, STEP, 0));
-                            const stepCheck = worldOctree.capsuleIntersect(playerCapsule);
-                            if (stepCheck && stepCheck.depth > 0.02) {
-                                // Still jammed once lifted — there's no headroom to step
-                                // into, so this is a wall or a low ceiling, not a ledge.
-                                // Abort rather than resolving it: resolving a penetration
-                                // this deep shoves the capsule a long way sideways and
-                                // teleports the player. Bailing leaves them standing against
-                                // the obstruction, which is what should happen.
+                            // Try the tallest lift that FITS, not one fixed lift. The gallery
+                            // doorway is why: its sill is only 0.11 tall, well under STEP, but
+                            // the lintel leaves 0.62 of headroom over a 0.50 capsule. Lifting
+                            // the full 0.20 drove the capsule 0.08 into that ceiling, which
+                            // reads as "wall, not ledge", so the step bailed every frame and
+                            // the only way in was to jump. Descending ladder: the doorway
+                            // clears at 0.12, open ledges still get the full 0.20.
+                            const LIFTS = [STEP, 0.15, 0.12, 0.10, 0.07, 0.05];
+                            let stepped = false;
+
+                            for (const lift of LIFTS) {
                                 playerCapsule.start.copy(preStepStart);
                                 playerCapsule.end.copy(preStepEnd);
-                            } else {
+                                playerCapsule.translate(new THREE.Vector3(0, lift, 0));
+
+                                const stepCheck = worldOctree.capsuleIntersect(playerCapsule);
+                                if (stepCheck && stepCheck.depth > 0.02) {
+                                    // No headroom at this lift. Don't resolve it — resolving a
+                                    // penetration this deep shoves the capsule a long way
+                                    // sideways and teleports the player. Just try a shorter one.
+                                    continue;
+                                }
                                 if (stepCheck) {
                                     playerCapsule.translate(stepCheck.normal.clone().multiplyScalar(stepCheck.depth));
                                 }
-                                // Advance while raised, before feeling for ground. The
-                                // collision above has already pushed the capsule back OFF the
-                                // ledge, so probing straight down from here just finds the
-                                // floor we were already on and the step reads as a failure —
-                                // which is why anything above about 5cm stopped the player
-                                // dead and needed a jump. Nudging forward by a radius puts
-                                // the capsule over the ledge before the probe.
+                                // Advance while raised, before feeling for ground. The collision
+                                // above has already pushed the capsule back OFF the ledge, so
+                                // probing straight down from here just finds the floor we were
+                                // already on and the step reads as a failure. Nudging forward by
+                                // a radius puts the capsule over the ledge before the probe.
                                 const stepFwd = new THREE.Vector3(playerVelocity.x, 0, playerVelocity.z);
                                 if (stepFwd.lengthSq() > 1e-6) {
-                                    stepFwd.normalize().multiplyScalar(PLAYER_RADIUS * 1.6);
-                                    playerCapsule.translate(stepFwd);
+                                    stepFwd.normalize();
+                                    // Does the nudge pass THROUGH something? An Octree is triangle
+                                    // soup with no notion of inside: a capsule that clears a wall's
+                                    // near face reports no collision at all in the hollow beyond,
+                                    // so "did I land somewhere clear" cannot tell stepping over a
+                                    // threshold from tunnelling into a wall. A ray at the lifted
+                                    // height can: it clears a real lip (that is what the lift is
+                                    // for) and hits a real wall.
+                                    const reach = PLAYER_RADIUS * 1.6;
+                                    _stepRay.origin.copy(playerCapsule.start);
+                                    _stepRay.direction.copy(stepFwd);
+                                    const blockedFwd = worldOctree.rayIntersect(_stepRay);
+                                    if (blockedFwd && blockedFwd.distance <= reach + PLAYER_RADIUS) {
+                                        continue;   // a face is in the way — not a ledge
+                                    }
+                                    playerCapsule.translate(stepFwd.multiplyScalar(reach));
                                 }
                                 // Feel for ground on the way back down instead of dropping the
-                                // whole STEP and demanding a hit at the bottom. That is why
-                                // small ledges needed a jump: a 5cm lip put the capsule back
-                                // exactly where it started, the probe found no NEW ground, the
-                                // step was judged a failure and got reverted — so you walked
-                                // into the lip again next frame. Probing in eighths catches the
-                                // lip at whatever height it actually is.
+                                // whole lift and demanding a hit at the bottom, and probe a
+                                // little PAST the lift. Stopping exactly at the lift is what
+                                // still blocked the gallery doorway after the lifts were fixed:
+                                // the floor past its threshold sits 1.2cm LOWER than the
+                                // corridor, so the capsule came back down to its original
+                                // height, found no ground, and the step was scored a failure.
+                                // 0.04 of slack is the most that can be allowed — at 0.08 the
+                                // probe reaches through solid walls and the player steps
+                                // straight into them.
                                 let settled = false;
-                                const PROBE = STEP / 8;
-                                for (let i = 0; i < 8 && !settled; i++) {
+                                const DROP = 0.04;
+                                const PROBE = 0.01;
+                                const PROBE_STEPS = Math.ceil((lift + DROP) / PROBE);
+                                for (let i = 0; i < PROBE_STEPS && !settled; i++) {
                                     playerCapsule.translate(new THREE.Vector3(0, -PROBE, 0));
                                     const g = worldOctree.capsuleIntersect(playerCapsule);
                                     if (g && g.normal.y > 0.5) {
                                         playerCapsule.translate(g.normal.clone().multiplyScalar(g.depth));
-                                        // Only accept a rise a step tall. Without this the
-                                        // push-out lands the player on top of anything the
-                                        // nudge reached into — a 0.45m block against a 0.50m
-                                        // player, which is vaulting, not stepping.
-                                        // Must be a genuine rise. Now that this runs on flat
-                                        // ground too, a settle at the same height means there
-                                        // was no ledge — accepting it would keep the forward
-                                        // nudge and let the player creep into whatever they
-                                        // walked into.
+                                        // Accept on "did we land somewhere clear", not "did we
+                                        // rise". Requiring a rise is what kept the gallery
+                                        // doorway shut: its threshold is a 2cm lip with the SAME
+                                        // floor on both sides, so a successful step over it nets
+                                        // zero rise and got reverted every frame. The forward
+                                        // nudge is only 1.6 radii, so anything thicker than that
+                                        // still traps the capsule and is rejected here — which is
+                                        // what stops the player creeping into walls. Tall walls
+                                        // never get this far: they still collide after the lift.
+                                        // The upper bound stays, or the push-out lands the player
+                                        // on top of anything the nudge reached into — a 0.45
+                                        // block against a 0.50 player, which is vaulting.
                                         const rise = playerCapsule.start.y - preStepStart.y;
-                                        if (rise > 0.005 && rise <= STEP + 0.01) {
+                                        // Is the landing spot actually free? A single
+                                        // capsuleIntersect can't answer that: it reports ONE
+                                        // contact, and for a capsule buried in a wall it usually
+                                        // returns the FLOOR at ~0 depth, hiding the wall
+                                        // completely — which let the player walk clean through a
+                                        // 0.9 slab. So resolve several contacts on a scratch copy
+                                        // and look at how far it gets shoved HORIZONTALLY: the
+                                        // floor pushes straight up and contributes nothing, while
+                                        // anything embedded in a wall shows up as real sideways
+                                        // correction.
+                                        const probe = playerCapsule.clone();
+                                        const push = new THREE.Vector3();
+                                        for (let k = 0; k < 4; k++) {
+                                            const c = worldOctree.capsuleIntersect(probe);
+                                            if (!c) break;
+                                            const d = c.normal.clone().multiplyScalar(c.depth);
+                                            probe.translate(d);
+                                            push.add(d);
+                                        }
+                                        const clearAhead = Math.hypot(push.x, push.z) <= 0.04;
+                                        if (clearAhead && rise >= -(DROP + 0.02) && rise <= STEP + 0.01) {
                                             playerOnGround = true;
                                             groundNormal.copy(g.normal);
                                             playerVelocity.y = 0;
@@ -4011,14 +4062,16 @@
                                         }
                                     }
                                 }
-                                if (!settled) {
-                                    // No ledge within a step. Put the capsule back exactly
-                                    // where it was — the forward nudge above may have left it
-                                    // inside whatever we walked into, and keeping that would
-                                    // let the player sink through solid geometry.
-                                    playerCapsule.start.copy(preStepStart);
-                                    playerCapsule.end.copy(preStepEnd);
-                                }
+                                if (settled) { stepped = true; break; }
+                            }
+
+                            if (!stepped) {
+                                // No ledge reachable at any lift. Put the capsule back exactly
+                                // where it was — the forward nudge may have left it inside
+                                // whatever we walked into, and keeping that would let the
+                                // player sink through solid geometry.
+                                playerCapsule.start.copy(preStepStart);
+                                playerCapsule.end.copy(preStepEnd);
                             }
                         }
                     }
