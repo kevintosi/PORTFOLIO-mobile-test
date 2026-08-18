@@ -260,7 +260,7 @@
 
     <!-- Standing hint, always on. The coordinate readout that used to live here was a
          development aid; nothing reads it any more. -->
-    <div id="hud">PRESS ESC TO PAUSE</div>
+    <div id="hud">PRESS ESC TO PAUSE<span id="dbg-pos"></span></div>
 
     <!-- Interaction prompts. Centred at the top rather than tucked in the HUD corner, and
          faded out once read — see setPrompt(). Kept out of #hud deliberately: that box is
@@ -2838,6 +2838,10 @@
         // prompt was rewritten every frame from the raycast, so keying the fade on "was it
         // set this frame" would have held it on screen permanently for as long as you looked
         // at anything.
+        const _edDebugPos = new URLSearchParams(location.search).has('debug')
+            ? document.getElementById('dbg-pos') : null;
+        if (_edDebugPos) _edDebugPos.style.whiteSpace = 'pre';
+
         const interactionPrompt = document.getElementById('screen-prompt');
         const PROMPT_HOLD_MS = 5000;
         let promptText = null, promptShownAt = 0;
@@ -3168,7 +3172,7 @@
         // Update camera from touch joystick each frame
         let lookOffsetX = 0, lookOffsetY = 0, lookLastT = 0;
         const LOOK_DEADZONE = 6;      // px of slop before a held finger starts steering
-        const LOOK_TURN_RATE = 2.4;   // radians/sec at full deflection
+        const LOOK_TURN_RATE = 1.2;   // radians/sec at full deflection (halved: 2.4 was too twitchy)
 
         function updateMobileCamera() {
             if (!isMobile || !mobileActive) return;
@@ -3929,8 +3933,14 @@
                         if (isGround) groundNormal.copy(result.normal);
                         playerCapsule.translate(result.normal.clone().multiplyScalar(result.depth));
 
-                        // Step-up: if collision is not clean ground and we were grounded
-                        if (!isGround && wasOnGround) {
+                        // Step-up. Deliberately NOT gated on `!isGround`: the lip at the
+                        // gallery entrance is 3.6cm, and a capsule's rounded bottom meeting
+                        // something that small produces a contact normal pointing mostly up,
+                        // so it classified as ground. The step never ran, the push-out was
+                        // vertical and moved you nowhere, and you had to jump over a 3.6cm
+                        // lip. Attempt it on any collision while grounded and moving; a
+                        // no-op on flat ground costs one probe and is reverted below.
+                        if (wasOnGround && isMovingKeys) {
                             // 0.5 was inherited from the old world, where it was most of a
                             // body height. In a 0.60-clearance tunnel it lifts the capsule
                             // straight into the ceiling, and the resulting push-out is what
@@ -3987,7 +3997,13 @@
                                         // push-out lands the player on top of anything the
                                         // nudge reached into — a 0.45m block against a 0.50m
                                         // player, which is vaulting, not stepping.
-                                        if (playerCapsule.start.y - preStepStart.y <= STEP + 0.01) {
+                                        // Must be a genuine rise. Now that this runs on flat
+                                        // ground too, a settle at the same height means there
+                                        // was no ledge — accepting it would keep the forward
+                                        // nudge and let the player creep into whatever they
+                                        // walked into.
+                                        const rise = playerCapsule.start.y - preStepStart.y;
+                                        if (rise > 0.005 && rise <= STEP + 0.01) {
                                             playerOnGround = true;
                                             groundNormal.copy(g.normal);
                                             playerVelocity.y = 0;
@@ -4053,6 +4069,15 @@
             if (isModelLoaded) updateTheaterProximity();
             updateEmbedExclusivity();
             updatePromptFade();
+
+            // Coordinates, on ?debug=1 only. Off by default so visitors never see them, but
+            // there when a spot in the world needs pointing at — which is exactly what the
+            // gallery threshold needed and what removing them cost.
+            if (_edDebugPos) {
+                const c = camera.position;
+                _edDebugPos.textContent =
+                    `\n{ x: ${c.x.toFixed(2)}, y: ${c.y.toFixed(2)}, z: ${c.z.toFixed(2)} }`;
+            }
 
             if (isMobile && mobileActive) {
                 const show = canBrowse() ? 'flex' : 'none';
