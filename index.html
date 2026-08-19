@@ -199,16 +199,29 @@
             border-radius: 14px;
         }
 
-        #mobile-unmute {
-            width: 86px; height: 44px;
-            /* Top right, clear of where the hand actually sits. Down by the other controls it
-               spent its life under a thumb. */
-            top: 20px; right: 20px;
+        /* Bottom centre, level with the zone hints. Flex means that when both buttons are
+           up they sit side by side and the pair stays centred - neither has to know the
+           other's width or be moved when the other appears. */
+        #mobile-center-bar {
+            position: absolute;
+            bottom: 26px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            pointer-events: none;          /* the buttons take their own touches */
+            z-index: 10;
+        }
+        #mobile-unmute, #mobile-shorts {
+            position: relative;            /* laid out by the flex row, not pinned */
+            height: 44px;
+            padding: 0 14px;
             font-size: 13px; font-weight: bold;
             border-radius: 12px;
             background: rgba(0,255,255,0.16);
             border-color: rgba(0,255,255,0.45);
-            display: none;                 /* only while a work screen is playing */
+            pointer-events: auto;
+            display: none;                 /* each shown only when it applies */
         }
 
         .browse-btn {
@@ -272,7 +285,10 @@
             </div>
             <div class="hint-label">DRAG TO LOOK</div>
         </div>
-        <div id="mobile-unmute" class="mobile-btn">UNMUTE</div>
+        <div id="mobile-center-bar">
+            <div id="mobile-unmute" class="mobile-btn">UNMUTE</div>
+            <div id="mobile-shorts" class="mobile-btn">MORE SHORTS</div>
+        </div>
         <!-- Browsing the shorts carousel and the photo gallery was mouse-wheel only, which a
              phone has no equivalent of. These appear only when there is something to page
              through, and drive the same index the wheel does. -->
@@ -3292,11 +3308,18 @@
             document.getElementById('mobile-unmute').addEventListener('touchstart', (e) => {
                 e.preventDefault();
                 const live = ytScreens.find(sc => sc.playing && !sc.paused);
-                if (!live) return;
-                ytCommand(live, 'unMute');
-                ytCommand(live, 'setVolume', [100]);
-                ytCommand(live, 'playVideo');
-                live.unmuted = true;
+                if (live) {
+                    ytCommand(live, 'unMute');
+                    ytCommand(live, 'setVolume', [100]);
+                    ytCommand(live, 'playVideo');
+                    live.unmuted = true;
+                    return;
+                }
+                // Otherwise it is the theater's own film asking for sound.
+                if (youtubePlayer) {
+                    try { youtubePlayer.unMute(); youtubePlayer.setVolume(100); youtubePlayer.playVideo(); } catch (e) {}
+                    theaterUnmuted = true;
+                }
             }, { passive: false });
 
             // Left half: hold and steer. Four separate buttons meant lifting a thumb and
@@ -4371,12 +4394,19 @@
                     if (el && el.style.display !== show) el.style.display = show;
                 }
 
-                // Offer sound only while a work screen is actually running, and drop the
-                // offer once it has been taken.
-                const live = ytScreens.find(sc => sc.playing && !sc.paused && !sc.unmuted);
+                // Offer sound only while something is running, and drop the offer once it has
+                // been taken. A theater film counts too - it is muted for the same iOS reason
+                // the work screens are.
+                const liveScreen = ytScreens.find(sc => sc.playing && !sc.paused && !sc.unmuted);
+                const liveFilm = playbackGroup && playbackGroup.visible && !isVideoPaused
+                                 && currentFilmSource === 'youtube' && !theaterUnmuted;
                 const um = document.getElementById('mobile-unmute');
-                const umShow = live ? 'flex' : 'none';
+                const umShow = (liveScreen || liveFilm) ? 'flex' : 'none';
                 if (um && um.style.display !== umShow) um.style.display = umShow;
+
+                const sh = document.getElementById('mobile-shorts');
+                const shShow = (playbackGroup && playbackGroup.visible) ? 'flex' : 'none';
+                if (sh && sh.style.display !== shShow) sh.style.display = shShow;
             }
 
             if (isPlayerActive()) {
@@ -4434,7 +4464,10 @@
                 }
                 setPrompt(prompt);
 
-                const shouldShowUI = playbackGroup.visible && isVideoPaused;
+                // On touch the way back is the MORE SHORTS button below, not a graphic laid
+                // over the film - that had to be aimed at, sat on the picture, and only
+                // existed while paused.
+                const shouldShowUI = playbackGroup.visible && isVideoPaused && !isMobile;
                 const targetAlpha = shouldShowUI ? 1.0 : 0.0;
                 if (backBtn) {
                     if (shouldShowUI) { backBtn.layers.enable(2); }
