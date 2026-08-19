@@ -3282,10 +3282,17 @@
                     moveTapTravel = Math.max(moveTapTravel, Math.abs(dx) + Math.abs(dy));
                     // Offset from the landing point, not the last move: the finger stays put
                     // and keeps walking, exactly like leaning a stick.
-                    keyStates['KeyW'] = dy < -MOVE_DEADZONE;
-                    keyStates['KeyS'] = dy > MOVE_DEADZONE;
-                    keyStates['KeyA'] = dx < -MOVE_DEADZONE;
-                    keyStates['KeyD'] = dx > MOVE_DEADZONE;
+                    //
+                    // One direction at a time - whichever axis the finger has travelled
+                    // furthest along. Letting both axes fire gave eight-way movement, and a
+                    // thumb arc that crosses a diagonal on its way anywhere made the walk
+                    // veer off course; it read as the controls being oversensitive when the
+                    // speed was never the problem.
+                    const horizontal = Math.abs(dx) > Math.abs(dy);
+                    keyStates['KeyW'] = !horizontal && dy < -MOVE_DEADZONE;
+                    keyStates['KeyS'] = !horizontal && dy > MOVE_DEADZONE;
+                    keyStates['KeyA'] =  horizontal && dx < -MOVE_DEADZONE;
+                    keyStates['KeyD'] =  horizontal && dx > MOVE_DEADZONE;
                     resetPlayerIdle();
                 }
             }, { passive: false });
@@ -4123,10 +4130,7 @@
 
             for (let i = 0; i < 5; i++) {
                 if (isPlayerActive() && isModelLoaded) {
-                    // Half speed on touch. The drag surface has no analogue range - past the
-                    // deadzone it is simply full tilt - so the desktop speed that a keyboard
-                    // taps in and out of runs away from you on a phone.
-                    const speed = (keyStates['ShiftLeft'] ? 8.0 : 5.0) * (isMobile ? 0.5 : 1.0);
+                    const speed = (keyStates['ShiftLeft'] ? 8.0 : 5.0);
                     camera.getWorldDirection(playerDirection);
                     playerDirection.y = 0; playerDirection.normalize();
 
