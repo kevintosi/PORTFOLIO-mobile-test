@@ -1979,6 +1979,16 @@
         //
         // `back` is optional and hangs on the far wall facing the door, sized on its own
         // rather than sharing the room's width — see layoutWorkRoom.
+        // TEMPORARY, ?bigfilm=1 only. The reaction film failed on the laptop with audio but
+        // no picture, and the suspected reason is simply that the screen was tiny - 0.17
+        // world units, a few dozen device pixels on a phone, which WebKit will not hand a
+        // video layer. This hangs the same film on the SAMSUNG wall at the full 1.45, using
+        // the identical CSS3D + hole-punch path every other work screen uses, so size is the
+        // only thing that differs. If it plays there, the size theory is right and the film
+        // can live on a wall; if it is still silent-with-no-picture, the cause is elsewhere.
+        // Off by default, so nobody browsing the site sees the experiment.
+        const BIG_FILM_TEST = new URLSearchParams(location.search).has('bigfilm');
+
         const WORK_ROOMS = [
             { name: 'UNITED MILEAGE PLUS',
               videos: ['JrFmHsX_7tA','CXP3F8tVRtk','2j3J6zEj3cY','OTZreN_R9yE','nxzJEyLHnXI','t_XBUVlP_YE'] },
@@ -2016,7 +2026,9 @@
             // the classic laptop, whose prop starts at x -3.50: a 0.18 gap at 1.45 wide.
             // Left rather than right because the door side only has 1.3m of run left, and
             // the film needs 1.45.
-            { name: 'SAMSUNG',    videos: ['xQNUtrxiZBs'], side: true, anchorX: -4.40 },
+            { name: 'SAMSUNG',    videos: BIG_FILM_TEST ? ['xQNUtrxiZBs', 'gk9VACPUg6g']
+                                                         : ['xQNUtrxiZBs'],
+                                  side: true, anchorX: -4.40 },
             { name: 'SEES CANDY',
               videos: ['R6Whs70aXLg','9pyFfV3xsUs','HHTIkseopcM','LGrCeKWlqC4','U26ZECF1NHM'] },
         ];
