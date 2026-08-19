@@ -1499,6 +1499,7 @@
 
             const screenData = { videoSrc, mesh: face, frontMat, video: null, texture: null,
                                  playing: false, uv, loop,
+                                 faceBox: fb.clone(),
                                  fitAspect: uv.fit !== undefined ? uv.fit : faceAspect };
             localScreens.push(screenData);
             console.info(`[glb-screen] "${materialName}" wired to ${videoSrc.split('/').pop()}`);
@@ -1546,23 +1547,57 @@
                         const fit = () => {
                             if (!v.videoWidth || !v.videoHeight) return;
                             const srcAspect = v.videoWidth / v.videoHeight;
-                            const target = screenData.fitAspect;
-                            if (srcAspect > target) {          // source too wide: trim the sides
-                                const k = target / srcAspect;
-                                tex.repeat.x = k; tex.offset.x = (1 - k) / 2;
-                            } else if (srcAspect < target) {   // too tall: trim top and bottom
-                                const k = srcAspect / target;
-                                tex.repeat.y = k; tex.offset.y = (1 - k) / 2;
+                            const fb2 = screenData.faceBox;
+                            if (!fb2) return;
+
+                            // Show the WHOLE frame, letterboxed, rather than cropping it to
+                            // fill. Cropping a 16:9 source onto this 1.23:1 screen threw away
+                            // 15% of each side and read as heavily zoomed in. A texture crop
+                            // is the only tool that fits ON the face, and it can only ever
+                            // zoom in - so the video moves onto its own plane sized to its own
+                            // aspect, parked just in front, and the face behind goes black to
+                            // become the bars.
+                            const dx = fb2.max.x - fb2.min.x;
+                            const dy = fb2.max.y - fb2.min.y;
+                            let w, h;
+                            if (srcAspect > dx / dy) { w = dx; h = dx / srcAspect; }
+                            else                     { h = dy; w = dy * srcAspect; }
+
+                            if (!screenData.innerMesh) {
+                                const mat = new THREE.MeshBasicMaterial({
+                                    map: tex, toneMapped: false, side: THREE.DoubleSide });
+                                screenData.innerMesh = new THREE.Mesh(
+                                    new THREE.PlaneGeometry(1, 1), mat);
+                                screenData.mesh.add(screenData.innerMesh);
                             }
+                            // Standard plane UVs, so the model's flipped ones no longer apply.
+                            tex.flipY = true;
+                            tex.repeat.set(1, 1);
+                            tex.offset.set(0, 0);
                             tex.needsUpdate = true;
+
+                            const im = screenData.innerMesh;
+                            const c = fb2.getCenter(new THREE.Vector3());
+                            im.scale.set(w, h, 1);
+                            im.position.set(c.x, c.y, c.z + Math.max(dx, dy) * 0.004);
+                            im.renderOrder = (screenData.mesh.renderOrder || 0) + 1;
+                            im.visible = screenData.playing;
+
+                            // The face is now the surround, not the picture.
+                            screenData.frontMat.map = null;
+                            screenData.frontMat.color.set(0x000000);
+                            screenData.frontMat.needsUpdate = true;
                         };
                         if (v.readyState >= 1) fit();
                         else v.addEventListener('loadedmetadata', fit, { once: true });
                     }
                 }
-                screenData.frontMat.map = screenData.texture;
-                screenData.frontMat.color.set(0xffffff);
-                screenData.frontMat.needsUpdate = true;
+                if (!screenData.innerMesh) {
+                    screenData.frontMat.map = screenData.texture;
+                    screenData.frontMat.color.set(0xffffff);
+                    screenData.frontMat.needsUpdate = true;
+                }
+                if (screenData.innerMesh) screenData.innerMesh.visible = true;
                 // Parked on its last frame after a non-looping run; play() from there would
                 // end instantly, so rewind first.
                 if (screenData.video.ended) screenData.video.currentTime = 0;
