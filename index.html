@@ -2007,8 +2007,9 @@
             { name: 'CARS.COM',
               videos: ['TKQgJSZ5Abg','RCyUYoQiwr4','LoFHGI31uHg','CobBwgeXcLE','Avfs6Y55daM'] },
             // One film, so it takes the back wall head-on at the full 1.45. The reaction
-            // piece (gk9VACPUg6g) is not here — it plays on the classic laptop in the room,
-            // wired up after the model loads.
+            // piece (gk9VACPUg6g) used to play on the classic laptop in this room; the
+            // laptop, its table and that film are all gone - see the prop removal after the
+            // model loads for why.
             // On the SIDE wall facing +z like every other screen — NOT the back wall, which
             // is where a lone film lands by default and where this one kept ending up.
             // anchorX -4.40 puts it under the room's title (Text017) and immediately left of
@@ -3830,12 +3831,30 @@
             });
             scene.add(model);
             hideGlbGalleryPhotos(model);
+
+            // The classic laptop, its stand and the table under it are removed, along with
+            // the reaction film that played on its screen. iOS will not composite video into
+            // a layer that small, so on a phone that film was audible over a blank screen -
+            // and a dead laptop in the room reads worse than no laptop at all. Everything
+            // measurable about the embed was correct (iframe centred on the mesh to 0.002,
+            // hole punched, nothing occluding it); the screen is simply too few device pixels
+            // for WebKit to give it a video layer.
+            //
+            // Done here rather than in the .glb so the model file stays the one Blender
+            // exports, and before the octree is built from `model` further down - otherwise
+            // the table's collision would stay behind as an invisible obstacle in the room.
+            const LAPTOP_PROPS = new Set(['classic_laptop', 'classic_laptop_stand',
+                                          'mesh_115', 'mesh_115_1', 'table002']);
+            const removedProps = [];
+            model.traverse(o => { if (o.isMesh && LAPTOP_PROPS.has(o.name)) removedProps.push(o); });
+            removedProps.forEach(o => o.removeFromParent());
+            console.info(`[props] removed ${removedProps.length} laptop/table meshes:`,
+                         removedProps.map(o => o.name).join(', '));
+
             // The Slavic TV lives in the model, so this can only run once the model is here.
             // loop false — plays through once, then a click starts it again.
             attachGlbScreenVideo(model, 'tv_screen', './VIDS/MPCC/how-to-make-content.mp4',
                                  { flipY: false }, false);
-            // The reaction film plays on the classic laptop in the SAMSUNG room.
-            attachGlbYouTubeScreen(model, 'classic_laptop_screen', 'gk9VACPUg6g');
             model.updateMatrixWorld(true);
 
             // --- SLIDING DOOR SETUP ---
