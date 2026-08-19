@@ -3270,14 +3270,25 @@
                 // few KB per clip rather than pulling all the video down at once - which is
                 // what was crashing the phone before.
                 for (const v of allLocalVideos()) {
-                    const wasMuted = v.muted;
-                    v.muted = true;                  // muted play is the only kind iOS grants
+                    const wasVolume = v.volume;
+                    // Volume 0, NOT muted. iOS hands out muted playback freely, so unlocking
+                    // an element while muted teaches it nothing about playing OUT LOUD - the
+                    // welcome panel came up silent on a first visit and only found its voice
+                    // after a reload, by which point the site had a playback history to lean
+                    // on. A silent-but-unmuted play inside the tap is what actually confers
+                    // the audible permission.
+                    v.volume = 0;
                     const pr = v.play();
+                    // Stop it in the SAME tick. Waiting on the play promise left every clip
+                    // running for a beat while the player stood at the spawn point, which is
+                    // why the shaft clip started up there instead of down the shaft.
+                    v.pause();
+                    v.currentTime = 0;
                     if (pr && pr.then) {
-                        pr.then(() => { v.pause(); v.currentTime = 0; v.muted = wasMuted; })
-                          .catch(() => { v.muted = wasMuted; });
+                        pr.then(() => { v.pause(); v.currentTime = 0; v.volume = wasVolume; })
+                          .catch(() => { v.volume = wasVolume; });   // pausing rejects the play; expected
                     } else {
-                        v.pause(); v.currentTime = 0; v.muted = wasMuted;
+                        v.volume = wasVolume;
                     }
                 }
             }, { once: true });
