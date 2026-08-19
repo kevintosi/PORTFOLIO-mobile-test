@@ -2417,6 +2417,10 @@
                 applyTheaterVolume(true);
                 startTheaterOnEntry();
             } else if (!inDomain) {
+                // Leaving the room stops the film. It used to carry on playing to nobody,
+                // audible across the map, because stopping it was a deliberate act nobody
+                // performs on their way out.
+                if (theaterInDomain) returnToShortsMenu();
                 theaterInDomain = false;
             }
 
@@ -2871,6 +2875,30 @@
         };
         const interactRange = (type) => INTERACT_RANGE[type] ?? INTERACT_RANGE._default;
 
+        // Stop the film and put the shorts list back. Lifted out of handleAction so the
+        // MORE SHORTS button and the you-have-left-the-room test can both call it - the
+        // second matters because a film kept playing to an empty room, and nobody thinks to
+        // pause before walking off.
+        let theaterUnmuted = false;
+        function returnToShortsMenu() {
+            if (!playbackGroup || !playbackGroup.visible) return;
+            if (currentFilmSource === 'youtube' && youtubePlayer) {
+                try { youtubePlayer.pauseVideo(); } catch (e) {}
+            } else if (vimeoPlayer) {
+                vimeoPlayer.pause().catch(e => {});
+            }
+            cssObject.visible = false;
+            screenMat.colorWrite = true;
+            screenMat.transparent = true;
+            screenMat.opacity = 0.5;
+
+            menuGroup.visible = true;
+            playbackGroup.visible = false;
+            raycaster.layers.set(1);
+            isVideoPaused = true;   // dimMultiplier follows from this, via filmIsPlaying()
+            theaterUnmuted = false;
+        }
+
         function handleAction(hit) {
             const data = hit.object.userData;
             const dist = hit.distance;
@@ -2900,21 +2928,7 @@
                 }
             }
             else if (data.type === 'back_menu' && (backBtn.material.uniforms ? backBtn.material.uniforms.opacity.value : backBtn.material.opacity) > 0.5) {
-                if (currentFilmSource === 'youtube' && youtubePlayer) {
-                    youtubePlayer.pauseVideo();
-                } else if (vimeoPlayer) {
-                    vimeoPlayer.pause().catch(e => {});
-                }
-
-                cssObject.visible = false;
-                screenMat.colorWrite = true;
-                screenMat.transparent = true;
-                screenMat.opacity = 0.5;
-
-                menuGroup.visible = true;
-                playbackGroup.visible = false;
-                raycaster.layers.set(1);
-                isVideoPaused = true;   // dimMultiplier follows from this, via filmIsPlaying()
+                returnToShortsMenu();
             }
 
             else if (data.type === 'yt_screen') {
@@ -3251,6 +3265,11 @@
                     }
                 }
             }, { once: true });
+
+            document.getElementById('mobile-shorts').addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                returnToShortsMenu();
+            }, { passive: false });
 
             // A latch, not a hold. Pinning a modifier down with one thumb while the other
             // walks and looks is not workable on a phone, and Shift is what the longer jump
