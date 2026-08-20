@@ -111,17 +111,17 @@
         }
 
         #welcome-img {
-            max-width: 70vw;
+            max-width: 80vw;
             /* dvh, not vh: vh in iOS Safari is the viewport with the URL bar hidden, so the
                art was being sized against more height than the page actually had. */
-            max-height: 70vh;
-            max-height: 70dvh;
+            max-height: 80vh;
+            max-height: 80dvh;
         }
         /* Landscape phones. The loading bar hangs below the card, and at 70dvh on a 330px
            viewport it finished 3px from the bottom edge - a shorter phone would have cut it
            off. Trading a little artwork for that margin only where the height is tight. */
         @media (max-height: 460px) {
-            #welcome-img { max-height: 56dvh; }
+            #welcome-img { max-height: 60dvh; }
         }
 
         #instructions {
@@ -245,16 +245,15 @@
         }
 
         .browse-btn {
-            width: 56px; height: 56px;
-            bottom: 158px;
-            font-size: 24px;
-            border-radius: 14px;
+            position: relative;            /* laid out by the centre bar, not pinned */
+            width: 52px; height: 44px;     /* same height as the other bar buttons */
+            font-size: 22px;
+            border-radius: 12px;
             background: rgba(0,255,255,0.16);
             border-color: rgba(0,255,255,0.45);
+            pointer-events: auto;
             display: none;                 /* shown per-frame only when browsable */
         }
-        #mobile-prev { right: 186px; }
-        #mobile-next { right: 110px; }
 
         #mobile-move-zone {
             position: absolute;
@@ -306,14 +305,15 @@
             <div class="hint-label">DRAG TO LOOK</div>
         </div>
         <div id="mobile-center-bar">
+            <!-- Browsing the shorts carousel and the photo gallery was mouse-wheel only,
+                 which a phone has no equivalent of. These appear only when there is something
+                 to page through, and drive the same index the wheel does. In the bar with
+                 everything else, so whatever is showing stays centred as a group. -->
+            <div id="mobile-prev" class="mobile-btn browse-btn">◀</div>
+            <div id="mobile-next" class="mobile-btn browse-btn">▶</div>
             <div id="mobile-unmute" class="mobile-btn">UNMUTE</div>
             <div id="mobile-shorts" class="mobile-btn">MORE SHORTS</div>
         </div>
-        <!-- Browsing the shorts carousel and the photo gallery was mouse-wheel only, which a
-             phone has no equivalent of. These appear only when there is something to page
-             through, and drive the same index the wheel does. -->
-        <div id="mobile-prev" class="mobile-btn browse-btn">◀</div>
-        <div id="mobile-next" class="mobile-btn browse-btn">▶</div>
         <div id="mobile-move-zone"></div>
         <div id="mobile-look-zone">
         </div>
