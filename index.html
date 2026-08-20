@@ -34,7 +34,13 @@
                CSS3D iframes sit BEHIND the canvas (z-index 0 vs 1) and would be hidden.
                OLD: linear-gradient(to bottom, #ff4848 0%, #154c58 50%, #070e10 100%) */
             background: #000;
+            /* 100vh in iOS Safari is the viewport with the URL bar HIDDEN, so with the bar on
+               screen the page box is taller than what you can actually see and anything
+               centred in it sits off-centre - which is what the welcome card was doing. dvh
+               tracks the visible area and follows the bar as it shows and hides. vh stays as
+               the fallback for anything too old to know dvh. */
             height: 100vh;
+            height: 100dvh;
         }
 
         canvas {
@@ -102,6 +108,20 @@
             user-select: none;
             border-radius: 5px;
             z-index: 200;
+        }
+
+        #welcome-img {
+            max-width: 70vw;
+            /* dvh, not vh: vh in iOS Safari is the viewport with the URL bar hidden, so the
+               art was being sized against more height than the page actually had. */
+            max-height: 70vh;
+            max-height: 70dvh;
+        }
+        /* Landscape phones. The loading bar hangs below the card, and at 70dvh on a 330px
+           viewport it finished 3px from the bottom edge - a shorter phone would have cut it
+           off. Trading a little artwork for that margin only where the height is tight. */
+        @media (max-height: 460px) {
+            #welcome-img { max-height: 56dvh; }
         }
 
         #instructions {
@@ -327,12 +347,20 @@
              touching the artwork. -->
         <div id="start-button" style="cursor:progress;perspective:800px;z-index:1;position:relative;
              opacity:0.5;transition:opacity 0.4s ease-out;">
-            <img id="welcome-img" src="./ui/WELCOME SCREEN_mobile.png" style="max-width:70vw;max-height:70vh;border-radius:15px;box-shadow:0 0 30px rgba(0,0,0,0.8);" alt="Welcome">
+            <img id="welcome-img" src="./ui/WELCOME SCREEN_mobile.png" style="border-radius:15px;box-shadow:0 0 30px rgba(0,0,0,0.8);" alt="Welcome">
             <!-- The model is ~70MB, so on a cold load there is a long stretch where the
                  welcome screen is up and the world does not exist yet. Entering during it
                  used to put you in an empty scene with a film already playing. This line is
                  the only thing that says which of those two states you are in. -->
-            <div id="load-status" style="margin-top:16px;text-align:center;font-family:monospace;
+            <!-- Out of the flow, hanging under the card. In the flow these two added about
+                 50px below the artwork, so the centred group was artwork-plus-50 and the card
+                 itself sat ~27px high - which is the off-centre welcome screen. The label is
+                 hidden with visibility rather than display so the bar does not jump when it
+                 goes, and that reserved space stayed behind for the whole session. Absolute
+                 keeps the card exactly centred at every stage and still costs the bar
+                 nothing when the label disappears. -->
+            <div id="load-meta" style="position:absolute;top:100%;left:0;right:0;margin-top:10px;">
+            <div id="load-status" style="text-align:center;font-family:monospace;
                  font-size:15px;letter-spacing:2px;color:#00ffff;text-shadow:0 0 8px rgba(0,255,255,0.5);">
                 LOADING WORLD…
             </div>
@@ -343,6 +371,7 @@
                 <div id="load-bar-fill" style="height:100%;width:0%;border-radius:3px;
                      background:#00ffff;box-shadow:0 0 10px rgba(0,255,255,0.75);
                      transition:width 0.25s ease-out;"></div>
+            </div>
             </div>
         </div>
     </div>
@@ -551,7 +580,12 @@
 
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+        // Chrome on iOS is WebKit underneath but gets a tighter per-tab memory budget than
+        // Safari, and it was the browser that died on load before the octree was cut down.
+        // Framebuffer cost scales with the SQUARE of this, so 1.5 -> 1.0 gives back a little
+        // over half of every render target: the main buffer, the composer's, and the mask.
+        const IOS_CHROME = /CriOS/i.test(navigator.userAgent);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, IOS_CHROME ? 1.0 : 1.5));
         renderer.setClearColor(0x000000, 0);
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -1979,16 +2013,6 @@
         //
         // `back` is optional and hangs on the far wall facing the door, sized on its own
         // rather than sharing the room's width — see layoutWorkRoom.
-        // TEMPORARY, ?bigfilm=1 only. The reaction film failed on the laptop with audio but
-        // no picture, and the suspected reason is simply that the screen was tiny - 0.17
-        // world units, a few dozen device pixels on a phone, which WebKit will not hand a
-        // video layer. This hangs the same film on the SAMSUNG wall at the full 1.45, using
-        // the identical CSS3D + hole-punch path every other work screen uses, so size is the
-        // only thing that differs. If it plays there, the size theory is right and the film
-        // can live on a wall; if it is still silent-with-no-picture, the cause is elsewhere.
-        // Off by default, so nobody browsing the site sees the experiment.
-        const BIG_FILM_TEST = new URLSearchParams(location.search).has('bigfilm');
-
         const WORK_ROOMS = [
             { name: 'UNITED MILEAGE PLUS',
               videos: ['JrFmHsX_7tA','CXP3F8tVRtk','2j3J6zEj3cY','OTZreN_R9yE','nxzJEyLHnXI','t_XBUVlP_YE'] },
@@ -2026,9 +2050,7 @@
             // the classic laptop, whose prop starts at x -3.50: a 0.18 gap at 1.45 wide.
             // Left rather than right because the door side only has 1.3m of run left, and
             // the film needs 1.45.
-            { name: 'SAMSUNG',    videos: BIG_FILM_TEST ? ['xQNUtrxiZBs', 'gk9VACPUg6g']
-                                                         : ['xQNUtrxiZBs'],
-                                  side: true, anchorX: -4.40 },
+            { name: 'SAMSUNG',    videos: ['xQNUtrxiZBs'], side: true, anchorX: -4.40 },
             { name: 'SEES CANDY',
               videos: ['R6Whs70aXLg','9pyFfV3xsUs','HHTIkseopcM','LGrCeKWlqC4','U26ZECF1NHM'] },
         ];
