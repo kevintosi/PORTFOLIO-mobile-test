@@ -4263,6 +4263,10 @@
         }
 
         function animate() {
+            // Before anything draws: if the viewport and the camera disagree, correct it.
+            // This is what stops the occasional stretched load - see applyViewportSize.
+            applyViewportSize();
+
             // Update mobile gyro camera before physics
             if (isMobile && mobileActive) updateMobileCamera();
 
@@ -4675,17 +4679,39 @@
 
             requestAnimationFrame(animate);
         }
+        // The world sometimes loaded stretched sideways and a refresh cured it. The camera's
+        // aspect was set once at startup and then only ever corrected by a `resize` event, and
+        // on a phone the viewport settles AFTER that: the URL bar collapses, the orientation
+        // lock engages, dvh changes under it. Land in the wrong moment and the aspect is
+        // wrong with nothing left to fix it - refreshing worked only because startup then
+        // read the settled size.
+        //
+        // So this no longer waits to be told. It compares the applied aspect against the real
+        // viewport and corrects any disagreement, whatever caused it and whether or not an
+        // event ever arrives. Called every frame; two number comparisons when nothing has
+        // moved, which is almost always.
+        let _vpW = 0, _vpH = 0;
+        function applyViewportSize() {
+            const w = window.innerWidth, h = window.innerHeight;
+            if (w === _vpW && h === _vpH && Math.abs(camera.aspect - w / h) < 1e-6) return;
+            _vpW = w; _vpH = h;
+            camera.aspect = w / h; camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+            cssRenderer.setSize(w, h);
+            composer.setSize(w, h);
+            maskTarget.setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
+        }
+
+        window.addEventListener('resize', applyViewportSize);
+        window.addEventListener('orientationchange', applyViewportSize);
+        if (window.visualViewport) {
+            // Fires for the URL bar showing and hiding, which plain `resize` can miss.
+            window.visualViewport.addEventListener('resize', applyViewportSize);
+        }
+        applyViewportSize();
+
         animate();
 
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            cssRenderer.setSize(window.innerWidth, window.innerHeight);
-            // Update Composer on resize
-            composer.setSize(window.innerWidth, window.innerHeight);
-            maskTarget.setSize(Math.max(1, window.innerWidth >> 1),
-                               Math.max(1, window.innerHeight >> 1));
-        });
 
         // Dev helper — visit with ?debug=1 to inspect/position content from the console.
         // __world.tp(x, z) teleports the player; __world.look(x, y, z) aims the camera.
